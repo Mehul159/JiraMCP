@@ -1,0 +1,23 @@
+services:
+  jira-mcp:
+    build: .
+    ports:
+      - "3333:3333"
+    environment:
+      # Use development locally so startup validation (production-only) does not block http:// URLs.
+      NODE_ENV: ${NODE_ENV:-development}
+      MCP_HTTP_HOST: "0.0.0.0"
+      MCP_HTTP_PORT: "3333"
+      MCP_DATA_DIR: /app/data
+      # Set in .env or override here:
+      DEFAULT_JIRA_BASE_URL: ${DEFAULT_JIRA_BASE_URL:-}
+      MCP_PUBLIC_ORIGIN: ${MCP_PUBLIC_ORIGIN:-http://localhost:3333}
+      MCP_SETUP_SECRET: ${MCP_SETUP_SECRET:-}
+      # Dev-only escape hatch if testing production mode locally without HTTPS:
+      # SKIP_PRODUCTION_CONFIG_VALIDATION: "true"
+    volumes:
+      - jira_mcp_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  jira_mcp_data:

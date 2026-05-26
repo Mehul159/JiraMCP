@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "jira-hosted": {
+      "url": "https://YOUR-HOST.example.com/mcp",
+      "headers": {
+        "X-Jira-Mcp-Device-Token": "PASTE_DEVICE_TOKEN_FROM_SETUP_SUCCESS_PAGE"
+      }
+    }
+  }
+}

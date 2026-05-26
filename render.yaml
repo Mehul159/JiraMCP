@@ -1,0 +1,33 @@
+# Blueprint: https://render.com/docs/blueprint-spec
+# In Render Dashboard: New → Blueprint → connect this Git repo (root contains render.yaml).
+
+services:
+  - type: web
+    name: jira-mcp
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    region: oregon
+    healthCheckPath: /health
+    # Persistent device registrations (/setup). Paid plans; single-instance only with disk.
+    disk:
+      name: jira-mcp-device-store
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MCP_HTTP_HOST
+        value: "0.0.0.0"
+      - key: MCP_DATA_DIR
+        value: /app/data
+      # Render injects PORT and RENDER_EXTERNAL_URL (https://…onrender.com).
+      # DEFAULT_JIRA_BASE_URL = shared Jira Cloud site (no trailing slash).
+      - key: DEFAULT_JIRA_BASE_URL
+        sync: false
+      # Long random secret — protects POST /setup/register
+      - key: MCP_SETUP_SECRET
+        sync: false
+      # Optional: custom domain / wrong URL in emails — overrides RENDER_EXTERNAL_URL for /setup copy-paste
+      # - key: MCP_PUBLIC_ORIGIN
+      #   value: https://jira-mcp.example.com

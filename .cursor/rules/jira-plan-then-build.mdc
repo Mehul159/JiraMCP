@@ -1,0 +1,43 @@
+---
+description: Jira issue-key messages → find context, plan, optional fast ship, PR-ready finish
+alwaysApply: true
+---
+
+# Ticket → Jira context → plan → (gate) → implement → PR
+
+## A — Ticket key only (safe default)
+
+When the user message **after trimming** is **only** a Jira issue key:
+
+**Pattern:** `^[A-Za-z][A-Za-z0-9]+-\d+$` (e.g. `KAN-1`, `PROJ-123`). Normalize to uppercase project segment (`kan-1` → `KAN-1`).
+
+Then:
+
+1. Call **`jira_ticket_plan_then_build`** with `issue_key` (use **`delivery_mode`: `"standard"`** or omit).
+2. **Phase 1 — Planning only:** Use playbook + JSON. Clear plan; **no** file edits / installs / patches.
+3. **Phase 2 — Gate:** Ask explicit approval before implementation.
+4. **Phase 3 — Implementation:** Only after approval; user may use **Agent** mode.
+5. **Phase 4 — PR-ready:** Branch naming (`feat/<KEY>-slug`), commits with `KEY:` prefix, tests, push, `gh pr create` (or team equivalent) with Jira link in PR body.
+
+## B — Ticket key + ship intent (fast lane)
+
+When the message matches **key + ship intent** on one line, e.g.:
+
+- `KAN-1 fast` · `KAN-1 ship` · `KAN-1 now` · `KAN-1 implement` · `PROJ-42 ship it`
+
+Extract the key (first token matching the key pattern). Call **`jira_ticket_plan_then_build`** with **`delivery_mode`: `"fast"`** and the normalized `issue_key`.
+
+Then follow the **fast** playbook from the tool: **≤8 bullet** plan, then implement **in the same turn** unless the ticket is dangerously ambiguous (then ask one question).
+
+Still finish with **PR-ready** steps (branch, commits, push, PR).
+
+## C — Discover tickets first
+
+If the user gives **JQL or natural language search** (“find issues in KAN about login”), use **`jira_search`** to list keys, then **`jira_ticket_plan_then_build`** or **`jira_get_issue_context`** on the chosen key.
+
+## Reality check
+
+- MCP cannot open GitHub/GitLab or click **Create PR** for the user; **Phase 4** means **you** run git/gh (or give exact commands).
+- **Minutes** depends on ticket size, repo size, and CI — the playbook minimizes approval rounds for **fast** mode only.
+
+If the message contains **more than** the ticket / ship keywords, honor those instructions too while still pulling Jira context when a key is present.
