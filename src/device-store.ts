@@ -1,5 +1,6 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";import { randomBytes } from "node:crypto";
+import { mkdir, readFile, rename, writeFile, open, unlink, stat } from "node:fs/promises";
+import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 
 export type StoredDeviceCredential = {
   email: string;
@@ -20,68 +21,112 @@ export function deviceStoreDir(): string {
   return raw;
 }
 
-export function ensureStoreReady(dir: string) {
-  mkdirSync(dir, { recursive: true });
+export async function ensureStoreReady(dir: string) {
+  await mkdir(dir, { recursive: true });
 }
 
-export function loadStore(dir: string): DeviceFilePayload {
-  ensureStoreReady(dir);
+export async function loadStore(dir: string): Promise<DeviceFilePayload> {
+  await ensureStoreReady(dir);
   const path = join(dir, "devices.json");
   try {
-    const txt = readFileSync(path, "utf8");
+    const txt = await readFile(path, "utf8");
     const parsed = JSON.parse(txt) as DeviceFilePayload;
     if (!parsed.devices || typeof parsed.devices !== "object") {
       return { devices: {} };
     }
     return parsed;
-  } catch {
-    return { devices: {} };
+  } catch (e: any) {
+    if (e.code === 'ENOENT') {
+      return { devices: {} };
+    }
+    throw e;
   }
 }
 
-export function saveStoreAtomic(dir: string, payload: DeviceFilePayload) {
-  ensureStoreReady(dir);
+export async function saveStoreAtomic(dir: string, payload: DeviceFilePayload) {
+  await ensureStoreReady(dir);
   const path = tokenFilename(dir);
   const tmp = `${path}.${randomBytes(8).toString("hex")}.tmp`;
   const fd = JSON.stringify(payload, null, 2);
-  writeFileSync(tmp, fd, { encoding: "utf8", mode: 0o600 });
-  renameSync(tmp, path);
+  await writeFile(tmp, fd, { encoding: "utf8", mode: 0o600 });
+  await rename(tmp, path);
 }
 
-/** Prefix lets ops grep logs without confusing tokens with other secrets. */
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function acquireLock(dir: string): Promise<() => Promise<void>> {
+  await ensureStoreReady(dir);
+  const lockPath = join(dir, "devices.json.lock");
+  let retries = 0;
+  while (retries < 50) {
+    try {
+      const file = await open(lockPath, "wx");
+      await file.close();
+      return async () => {
+        try { await unlink(lockPath); } catch {}
+      };
+    } catch (e: any) {
+      if (e.code === "EEXIST") {
+        try {
+          const stats = await stat(lockPath);
+          if (Date.now() - stats.mtimeMs > 10000) {
+            await unlink(lockPath);
+            continue;
+          }
+        } catch (statErr) {}
+        retries++;
+        await delay(100);
+      } else {
+        throw e;
+      }
+    }
+  }
+  throw new Error("Could not acquire lock for devices.json");
+}
+
 export function generateDeviceToken(): string {
   return `jmcp_${randomBytes(32).toString("base64url")}`;
 }
 
-export function registerDevice(
+export async function registerDevice(
   dir: string,
   email: string,
   apiToken: string,
-): string {
-  const token = generateDeviceToken();
-  const payload = loadStore(dir);
-  payload.devices[token] = {
-    email: email.trim(),
-    apiToken,
-    createdAt: new Date().toISOString(),
-  };
-  saveStoreAtomic(dir, payload);
-  return token;
+): Promise<string> {
+  const release = await acquireLock(dir);
+  try {
+    const token = generateDeviceToken();
+    const payload = await loadStore(dir);
+    payload.devices[token] = {
+      email: email.trim(),
+      apiToken,
+      createdAt: new Date().toISOString(),
+    };
+    await saveStoreAtomic(dir, payload);
+    return token;
+  } finally {
+    await release();
+  }
 }
 
-export function getDeviceCredential(
+export async function getDeviceCredential(
   dir: string,
   token: string,
-): StoredDeviceCredential | null {
+): Promise<StoredDeviceCredential | null> {
   if (!token) return null;
-  const payload = loadStore(dir);
+  const payload = await loadStore(dir);
   return payload.devices[token] ?? null;
 }
 
-export function revokeDevice(dir: string, token: string): boolean {
-  const payload = loadStore(dir);
-  if (!payload.devices[token]) return false;
-  delete payload.devices[token];
-  saveStoreAtomic(dir, payload);
-  return true;
+export async function revokeDevice(dir: string, token: string): Promise<boolean> {
+  const release = await acquireLock(dir);
+  try {
+    const payload = await loadStore(dir);
+    if (!payload.devices[token]) return false;
+    delete payload.devices[token];
+    await saveStoreAtomic(dir, payload);
+    return true;
+  } finally {
+    await release();
+  }
 }

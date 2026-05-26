@@ -92,27 +92,29 @@ async function fetchIssueContextBundle(
   q.set("expand", "changelog,renderedFields");
   const main = await jiraFetch<IssueResponse>(
     cfg,
-    `/rest/api/3/issue/${encodeURIComponent(issue_key)}?${q}`,
+    `/rest/api/3/issue/${encodeURIComponent(issue_key.trim())}?${q}`,
   );
 
   const cap = options.max_linked ?? 15;
   const linkedKeys = collectLinkedKeys(main).slice(0, cap);
-  const subKeys = collectSubtaskKeys(main);
+  const subKeys = collectSubtaskKeys(main).slice(0, 50);
   const toFetch = [...new Set([...subKeys, ...linkedKeys])];
 
   const related: Record<string, IssueResponse> = {};
-  for (const k of toFetch) {
-    try {
-      related[k] = await fetchIssueBrief(cfg, k);
-    } catch (e) {
-      related[k] = {
-        key: k,
-        fields: {
-          summary: `(fetch failed: ${e instanceof Error ? e.message : String(e)})`,
-        },
-      };
-    }
-  }
+  await Promise.all(
+    toFetch.map(async (k) => {
+      try {
+        related[k] = await fetchIssueBrief(cfg, k);
+      } catch (e) {
+        related[k] = {
+          key: k,
+          fields: {
+            summary: `(fetch failed: ${e instanceof Error ? e.message : String(e)})`,
+          },
+        };
+      }
+    })
+  );
 
   let comments: unknown = null;
   try {
@@ -122,7 +124,7 @@ async function fetchIssueContextBundle(
     });
     comments = await jiraFetch<unknown>(
       cfg,
-      `/rest/api/3/issue/${encodeURIComponent(issue_key)}/comment?${cq}`,
+      `/rest/api/3/issue/${encodeURIComponent(issue_key.trim())}/comment?${cq}`,
     );
   } catch {
     comments = { error: "Could not load comments" };
@@ -229,7 +231,7 @@ export function createJiraMcpServer(): McpServer {
       if (expand?.trim()) q.set("expand", expand.trim());
       const data = await jiraFetch<IssueResponse>(
         cfg,
-        `/rest/api/3/issue/${encodeURIComponent(issue_key)}?${q}`,
+        `/rest/api/3/issue/${encodeURIComponent(issue_key.trim())}?${q}`,
       );
       return {
         content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
@@ -294,10 +296,11 @@ export function createJiraMcpServer(): McpServer {
       const cfg = getCfg();
       const q = new URLSearchParams({
         maxResults: String(max_results ?? 50),
+        orderBy: "-created",
       });
       const data = await jiraFetch<unknown>(
         cfg,
-        `/rest/api/3/issue/${encodeURIComponent(issue_key)}/comment?${q}`,
+        `/rest/api/3/issue/${encodeURIComponent(issue_key.trim())}/comment?${q}`,
       );
       return {
         content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
@@ -436,7 +439,7 @@ export function createJiraMcpServer(): McpServer {
       const cfg = getCfg();
       const data = await jiraFetch<unknown>(
         cfg,
-        `/rest/api/3/issue/${encodeURIComponent(issue_key)}/transitions`,
+        `/rest/api/3/issue/${encodeURIComponent(issue_key.trim())}/transitions`,
       );
       return {
         content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
@@ -467,7 +470,7 @@ export function createJiraMcpServer(): McpServer {
       q.set("expand", "changelog,renderedFields");
       const data = await jiraFetch<IssueResponse>(
         cfg,
-        `/rest/api/3/issue/${encodeURIComponent(key)}?${q}`,
+        `/rest/api/3/issue/${encodeURIComponent(key.trim())}?${q}`,
       );
       return {
         contents: [

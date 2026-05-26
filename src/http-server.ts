@@ -95,11 +95,11 @@ type TransportRecord = {
 
 const transports: Record<string, TransportRecord> = {};
 
-function jiraFromRequest(req: Request) {
-  return resolveHostedJiraConfig(
+async function jiraFromRequest(req: Request) {
+  return await resolveHostedJiraConfig(
     req.headers,
     defaultSiteUrl || undefined,
-    (tok) => getDeviceCredential(deviceDir, tok),
+    async (tok) => await getDeviceCredential(deviceDir, tok),
   );
 }
 
@@ -127,15 +127,15 @@ app.get("/health", (_req: Request, res: Response) => {
 });
 
 const mcpPostHandler = async (req: Request, res: Response) => {
-  const cfg = jiraFromRequest(req);
-  if (!cfg) {
-    authError(res);
-    return;
-  }
-
-  const sessionId = sessionHeader(req);
-
   try {
+    const cfg = await jiraFromRequest(req);
+    if (!cfg) {
+      authError(res);
+      return;
+    }
+
+    const sessionId = sessionHeader(req);
+
     await withJiraRequestContext(cfg, async () => {
       if (sessionId && transports[sessionId]) {
         const { transport } = transports[sessionId];
@@ -190,39 +190,53 @@ const mcpPostHandler = async (req: Request, res: Response) => {
 };
 
 const mcpGetHandler = async (req: Request, res: Response) => {
-  const cfg = jiraFromRequest(req);
-  if (!cfg) {
-    authError(res);
-    return;
-  }
+  try {
+    const cfg = await jiraFromRequest(req);
+    if (!cfg) {
+      authError(res);
+      return;
+    }
 
-  const sessionId = sessionHeader(req);
-  if (!sessionId || !transports[sessionId]) {
-    res.status(400).send("Invalid or missing session ID");
-    return;
-  }
+    const sessionId = sessionHeader(req);
+    if (!sessionId || !transports[sessionId]) {
+      res.status(400).send("Invalid or missing session ID");
+      return;
+    }
 
-  await withJiraRequestContext(cfg, async () => {
-    await transports[sessionId].transport.handleRequest(req, res);
-  });
+    await withJiraRequestContext(cfg, async () => {
+      await transports[sessionId].transport.handleRequest(req, res);
+    });
+  } catch (err) {
+    console.error(err);
+    if (!res.headersSent) {
+      res.status(500).send("Internal server error");
+    }
+  }
 };
 
 const mcpDeleteHandler = async (req: Request, res: Response) => {
-  const cfg = jiraFromRequest(req);
-  if (!cfg) {
-    authError(res);
-    return;
-  }
+  try {
+    const cfg = await jiraFromRequest(req);
+    if (!cfg) {
+      authError(res);
+      return;
+    }
 
-  const sessionId = sessionHeader(req);
-  if (!sessionId || !transports[sessionId]) {
-    res.status(400).send("Invalid or missing session ID");
-    return;
-  }
+    const sessionId = sessionHeader(req);
+    if (!sessionId || !transports[sessionId]) {
+      res.status(400).send("Invalid or missing session ID");
+      return;
+    }
 
-  await withJiraRequestContext(cfg, async () => {
-    await transports[sessionId].transport.handleRequest(req, res);
-  });
+    await withJiraRequestContext(cfg, async () => {
+      await transports[sessionId].transport.handleRequest(req, res);
+    });
+  } catch (err) {
+    console.error(err);
+    if (!res.headersSent) {
+      res.status(500).send("Internal server error");
+    }
+  }
 };
 
 app.post("/mcp", mcpPostHandler);

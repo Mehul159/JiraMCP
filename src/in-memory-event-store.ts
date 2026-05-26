@@ -11,9 +11,13 @@ export class InMemoryEventStore implements EventStore {
     EventId,
     { streamId: StreamId; message: JSONRPCMessage }
   >();
+  private readonly MAX_EVENTS = 1000;
+  private eventCounter = 0;
 
   private generateEventId(streamId: StreamId): EventId {
-    return `${streamId}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    this.eventCounter++;
+    const counterStr = this.eventCounter.toString().padStart(10, '0');
+    return `${streamId}_${Date.now()}_${counterStr}`;
   }
 
   private getStreamIdFromEventId(eventId: EventId): StreamId {
@@ -24,6 +28,14 @@ export class InMemoryEventStore implements EventStore {
   async storeEvent(streamId: StreamId, message: JSONRPCMessage): Promise<EventId> {
     const eventId = this.generateEventId(streamId);
     this.events.set(eventId, { streamId, message });
+    
+    if (this.events.size > this.MAX_EVENTS) {
+      const firstKey = this.events.keys().next().value;
+      if (firstKey) {
+        this.events.delete(firstKey);
+      }
+    }
+    
     return eventId;
   }
 

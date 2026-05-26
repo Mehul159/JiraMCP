@@ -105,17 +105,17 @@ export function jiraConfigFromHttpHeaders(
  * Prefer device token from one-time /setup (shared Cursor config + per-PC env).
  * Fallback: X-Jira-Email + X-Jira-Api-Token headers.
  */
-export function resolveHostedJiraConfig(
+export async function resolveHostedJiraConfig(
   headers: IncomingHttpHeaders,
   defaultSiteUrl: string | undefined,
   lookupDevice: (
     token: string,
-  ) => { email: string; apiToken: string } | null,
-): JiraConfig | null {
+  ) => Promise<{ email: string; apiToken: string } | null>,
+): Promise<JiraConfig | null> {
   const deviceTok =
     headerValue(headers, "x-jira-mcp-device-token") || bearerToken(headers);
   if (deviceTok) {
-    const row = lookupDevice(deviceTok);
+    const row = await lookupDevice(deviceTok);
     if (!row) return null;
     const baseUrlRaw =
       defaultSiteUrl?.trim() ||
