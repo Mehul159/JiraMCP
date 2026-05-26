@@ -23,15 +23,15 @@ function bearerToken(headers: IncomingHttpHeaders): string | undefined {
   return auth.slice(7).trim();
 }
 
-export function resolveHostedRequestContext(
+export async function resolveHostedRequestContext(
   headers: IncomingHttpHeaders,
   defaultSiteUrl: string | undefined,
-  lookupDevice: (token: string) => StoredDeviceCredential | null,
-): RequestContext | null {
+  lookupDevice: (token: string) => Promise<StoredDeviceCredential | null>,
+): Promise<RequestContext | null> {
   const deviceTok =
     headerValue(headers, "x-jira-mcp-device-token") || bearerToken(headers);
   if (deviceTok) {
-    const row = lookupDevice(deviceTok);
+    const row = await lookupDevice(deviceTok);
     if (!row) return null;
     const baseUrlRaw =
       defaultSiteUrl?.trim() ||

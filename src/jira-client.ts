@@ -1,4 +1,5 @@
 import type { IncomingHttpHeaders } from "node:http";
+import type { StoredDeviceCredential } from "./device-store.js";
 
 export type JiraConfig = {
   baseUrl: string;
@@ -105,31 +106,19 @@ export function jiraConfigFromHttpHeaders(
  * Prefer device token from one-time /setup (shared Cursor config + per-PC env).
  * Fallback: X-Jira-Email + X-Jira-Api-Token headers.
  */
-export function resolveHostedJiraConfig(
+/** Jira-only auth; for git/MR credentials use resolveHostedRequestContext in jira/hosted-auth.ts */
+export async function resolveHostedJiraConfig(
   headers: IncomingHttpHeaders,
   defaultSiteUrl: string | undefined,
-  lookupDevice: (
-    token: string,
-  ) => { email: string; apiToken: string } | null,
-): JiraConfig | null {
-  const deviceTok =
-    headerValue(headers, "x-jira-mcp-device-token") || bearerToken(headers);
-  if (deviceTok) {
-    const row = lookupDevice(deviceTok);
-    if (!row) return null;
-    const baseUrlRaw =
-      defaultSiteUrl?.trim() ||
-      process.env.DEFAULT_JIRA_BASE_URL?.trim() ||
-      process.env.JIRA_BASE_URL?.trim() ||
-      "";
-    if (!baseUrlRaw) return null;
-    return {
-      baseUrl: normalizeBaseUrl(baseUrlRaw),
-      email: row.email,
-      apiToken: row.apiToken,
-    };
-  }
-  return jiraConfigFromHttpHeaders(headers, defaultSiteUrl);
+  lookupDevice: (token: string) => Promise<StoredDeviceCredential | null>,
+): Promise<JiraConfig | null> {
+  const { resolveHostedRequestContext } = await import("./jira/hosted-auth.js");
+  const ctx = await resolveHostedRequestContext(
+    headers,
+    defaultSiteUrl,
+    lookupDevice,
+  );
+  return ctx?.jira ?? null;
 }
 
 function bearerToken(headers: IncomingHttpHeaders): string | undefined {

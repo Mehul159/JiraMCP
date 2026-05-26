@@ -65,7 +65,7 @@ export function createJiraMcpServer(): McpServer {
       if (expand?.trim()) q.set("expand", expand.trim());
       const data = await jiraFetch<IssueResponse>(
         cfg,
-        `/rest/api/3/issue/${encodeURIComponent(issue_key)}?${q}`,
+        `/rest/api/3/issue/${encodeURIComponent(issue_key.trim())}?${q}`,
       );
       return {
         content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
@@ -121,7 +121,7 @@ export function createJiraMcpServer(): McpServer {
       });
       const data = await jiraFetch<unknown>(
         cfg,
-        `/rest/api/3/issue/${encodeURIComponent(issue_key)}/comment?${q}`,
+        `/rest/api/3/issue/${encodeURIComponent(issue_key.trim())}/comment?${q}`,
       );
       return {
         content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
@@ -166,7 +166,7 @@ export function createJiraMcpServer(): McpServer {
     },
     async ({ issue_key, delivery_mode, max_linked, comment_limit }) => {
       const cfg = getCfg();
-      const bundle = await fetchIssueContextBundle(cfg, issue_key.trim(), {
+      const bundle = await fetchIssueContextBundle(cfg, issue_key, {
         max_linked,
         comment_limit,
       });
@@ -237,7 +237,7 @@ export function createJiraMcpServer(): McpServer {
       const cfg = getCfg();
       const data = await jiraFetch<unknown>(
         cfg,
-        `/rest/api/3/issue/${encodeURIComponent(issue_key)}/transitions`,
+        `/rest/api/3/issue/${encodeURIComponent(issue_key.trim())}/transitions`,
       );
       return {
         content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
@@ -266,7 +266,7 @@ export function createJiraMcpServer(): McpServer {
       q.set("expand", "changelog,renderedFields");
       const data = await jiraFetch<IssueResponse>(
         cfg,
-        `/rest/api/3/issue/${encodeURIComponent(key)}?${q}`,
+        `/rest/api/3/issue/${encodeURIComponent(String(key).trim())}?${q}`,
       );
       return {
         contents: [

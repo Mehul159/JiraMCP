@@ -34,9 +34,9 @@ function requireSetupSecret(req: Request, res: Response): boolean {
   return true;
 }
 
-/** Avoid breaking out of &lt;textarea&gt; if token ever contained &lt; */
+/** Avoid breaking out of <textarea> if token ever contained < */
 function safeTextareaBody(s: string): string {
-  return s.replace(/</g, "\\u003c");
+  return s.replace(/</g, "&lt;");
 }
 
 export function mountSetupRoutes(app: Express, serverPublicOrigin: string) {
@@ -75,7 +75,7 @@ ${needSecret ? `<label>Setup secret<input type="password" name="setup_secret" re
 </body></html>`);
   });
 
-  formRouter.post("/setup/register", (req: Request, res: Response) => {
+  formRouter.post("/setup/register", async (req: Request, res: Response) => {
     if (!requireSetupSecret(req, res)) return;
     if (!siteUrl) {
       res
@@ -100,7 +100,7 @@ ${needSecret ? `<label>Setup secret<input type="password" name="setup_secret" re
     }
     let token: string;
     try {
-      token = registerDevice(storeDir, email, apiToken, {
+      token = await registerDevice(storeDir, email, apiToken, {
         github_token: githubToken || undefined,
         gitlab_token: gitlabToken || undefined,
       });
@@ -179,7 +179,7 @@ button{padding:.45rem .85rem;margin:.35rem .35rem 0 0}
 </body></html>`);
   });
 
-  formRouter.post("/setup/revoke", (req: Request, res: Response) => {
+  formRouter.post("/setup/revoke", async (req: Request, res: Response) => {
     if (!requireSetupSecret(req, res)) return;
     const tok =
       typeof req.body?.device_token === "string"
@@ -189,7 +189,7 @@ button{padding:.45rem .85rem;margin:.35rem .35rem 0 0}
       res.status(400).send("Missing device_token.");
       return;
     }
-    const ok = revokeDevice(storeDir, tok);
+    const ok = await revokeDevice(storeDir, tok);
     res.status(ok ? 200 : 404).send(ok ? "Revoked." : "Unknown token.");
   });
 

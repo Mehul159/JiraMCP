@@ -17,7 +17,6 @@ function trimOrigin(url: string | undefined): string | undefined {
   return t || undefined;
 }
 
-/** User override, then Render’s public URL, then local dev default. */
 function resolvedPublicOrigin(listenPort: number): string {
   return (
     trimOrigin(process.env.MCP_PUBLIC_ORIGIN) ||
@@ -93,7 +92,7 @@ type TransportRecord = {
 
 const transports: Record<string, TransportRecord> = {};
 
-function requestContextFromRequest(req: Request) {
+async function requestContextFromRequest(req: Request) {
   return resolveHostedRequestContext(
     req.headers,
     defaultSiteUrl || undefined,
@@ -125,15 +124,15 @@ app.get("/health", (_req: Request, res: Response) => {
 });
 
 const mcpPostHandler = async (req: Request, res: Response) => {
-  const ctx = requestContextFromRequest(req);
-  if (!ctx) {
-    authError(res);
-    return;
-  }
-
-  const sessionId = sessionHeader(req);
-
   try {
+    const ctx = await requestContextFromRequest(req);
+    if (!ctx) {
+      authError(res);
+      return;
+    }
+
+    const sessionId = sessionHeader(req);
+
     await withRequestContext(ctx, async () => {
       if (sessionId && transports[sessionId]) {
         const { transport } = transports[sessionId];
@@ -188,39 +187,53 @@ const mcpPostHandler = async (req: Request, res: Response) => {
 };
 
 const mcpGetHandler = async (req: Request, res: Response) => {
-  const ctx = requestContextFromRequest(req);
-  if (!ctx) {
-    authError(res);
-    return;
-  }
+  try {
+    const ctx = await requestContextFromRequest(req);
+    if (!ctx) {
+      authError(res);
+      return;
+    }
 
-  const sessionId = sessionHeader(req);
-  if (!sessionId || !transports[sessionId]) {
-    res.status(400).send("Invalid or missing session ID");
-    return;
-  }
+    const sessionId = sessionHeader(req);
+    if (!sessionId || !transports[sessionId]) {
+      res.status(400).send("Invalid or missing session ID");
+      return;
+    }
 
-  await withRequestContext(ctx, async () => {
-    await transports[sessionId].transport.handleRequest(req, res);
-  });
+    await withRequestContext(ctx, async () => {
+      await transports[sessionId].transport.handleRequest(req, res);
+    });
+  } catch (err) {
+    console.error(err);
+    if (!res.headersSent) {
+      res.status(500).send("Internal server error");
+    }
+  }
 };
 
 const mcpDeleteHandler = async (req: Request, res: Response) => {
-  const ctx = requestContextFromRequest(req);
-  if (!ctx) {
-    authError(res);
-    return;
-  }
+  try {
+    const ctx = await requestContextFromRequest(req);
+    if (!ctx) {
+      authError(res);
+      return;
+    }
 
-  const sessionId = sessionHeader(req);
-  if (!sessionId || !transports[sessionId]) {
-    res.status(400).send("Invalid or missing session ID");
-    return;
-  }
+    const sessionId = sessionHeader(req);
+    if (!sessionId || !transports[sessionId]) {
+      res.status(400).send("Invalid or missing session ID");
+      return;
+    }
 
-  await withRequestContext(ctx, async () => {
-    await transports[sessionId].transport.handleRequest(req, res);
-  });
+    await withRequestContext(ctx, async () => {
+      await transports[sessionId].transport.handleRequest(req, res);
+    });
+  } catch (err) {
+    console.error(err);
+    if (!res.headersSent) {
+      res.status(500).send("Internal server error");
+    }
+  }
 };
 
 app.post("/mcp", mcpPostHandler);
