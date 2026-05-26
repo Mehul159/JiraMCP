@@ -29,6 +29,8 @@ Optional:
 | `MCP_DATA_DIR` | `/app/data` | Device credential storage |
 | `MCP_ALLOWED_HOSTS` | _(unset)_ | Comma-separated allowed `Host` headers |
 | `RENDER_EXTERNAL_URL` | _(Render sets)_ | HTTPS URL of the service; used when `MCP_PUBLIC_ORIGIN` is unset |
+| `JIRAFLOW_WORKSPACE_ROOT` | _(unset)_ | Directory containing cloned repos + `workspaces.yaml` for hosted git/MR |
+| `GITHUB_TOKEN` / `GITLAB_TOKEN` | _(unset)_ | Server fallback for MR creation (per-device tokens via `/setup` preferred) |
 
 When `NODE_ENV=production`, the server **exits on startup** if `DEFAULT_JIRA_BASE_URL` or `MCP_SETUP_SECRET` is missing, or if neither **`MCP_PUBLIC_ORIGIN`** nor **`RENDER_EXTERNAL_URL`** resolves to an `https://…` URL. Override with `SKIP_PRODUCTION_CONFIG_VALIDATION=true` only for emergencies.
 
@@ -69,10 +71,17 @@ Prerequisites: [Fly CLI](https://fly.io/docs/hands-on/install-flyctl/), account,
    fly deploy
    ```
 
-5. **Smoke test**
+5. **JiraFlow workspaces (optional, for git/MR tools on hosted)**
+
+   - Mount or sync repos under e.g. `/data/jiraflow/workspaces`
+   - Set `JIRAFLOW_WORKSPACE_ROOT=/data/jiraflow/workspaces`
+   - Add `workspaces.yaml` (see `workspaces.yaml.example` in repo)
+   - Clone each registered repo into the matching subdirectory
+
+6. **Smoke test**
 
    - Open `https://YOUR_APP.fly.dev/health`
-   - Open `https://YOUR_APP.fly.dev/setup`, register once, set **`JIRA_MCP_DEVICE_TOKEN`** on your PC (see success page).
+   - Open `https://YOUR_APP.fly.dev/setup`, register once (optional GitHub/GitLab PAT), set **`JIRA_MCP_DEVICE_TOKEN`** on your PC (see success page).
 
 **Revoke a device** (admin):
 

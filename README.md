@@ -118,11 +118,33 @@ Copy **`.cursor/rules/jira-plan-then-build.mdc`** into **application repos** whe
 
 **MCP prompt:** **`jira_plan_then_build`** — optional; pass `issue_key` and optionally **`delivery_mode`** (`standard` \| `fast`).
 
-## Tools you get
+## JiraFlow (v2)
+
+Deterministic **ticket → context → git → MR** orchestration. All JiraFlow tools return JSON: `{ "success", "message", "data" }`.
+
+**Workflow:** `jira_start_ticket` → `prepare_cursor_context` → `workspace_setup` → `create_feature_branch` → (code) → `validate_changes` → `commit_with_context` → `create_merge_request`
 
 | Tool | Use |
 |------|-----|
-| `jira_ticket_plan_then_build` | **Ticket-led delivery:** full issue context + playbook; **`delivery_mode`** `standard` (plan → approve → build → PR) or `fast` (short plan → build → PR in one turn) |
+| `jira_start_ticket` | Load ticket intelligence, init `.jiraflow/state.json` |
+| `prepare_cursor_context` | High-signal markdown + `files_to_read` from repo grep |
+| `generate_implementation_plan` | Structured plan markdown |
+| `workspace_setup` | Checkout parent/base branch |
+| `create_feature_branch` | Branch from `.jiraflow.yaml` pattern |
+| `commit_with_context` | Ticket-aware commit message |
+| `validate_changes` | Run `workflow.validate_scripts` |
+| `create_merge_request` | GitHub PR / GitLab MR |
+| `jiraflow_workspace_status` | List hosted workspaces + state |
+
+Copy [`.jiraflow.yaml.example`](.jiraflow.yaml.example) to app repos as `.jiraflow.yaml`. Hosted: set `JIRAFLOW_WORKSPACE_ROOT`, clone repos, copy [`workspaces.yaml.example`](workspaces.yaml.example) to `workspaces.yaml`. Optional GitHub/GitLab tokens via `/setup` or env.
+
+Design: [`docs/superpowers/specs/2026-05-27-jiraflow-design.md`](docs/superpowers/specs/2026-05-27-jiraflow-design.md)
+
+## Tools you get (Jira read)
+
+| Tool | Use |
+|------|-----|
+| `jira_ticket_plan_then_build` | Legacy playbook + JSON (prefer `jira_start_ticket`) |
 | `jira_get_issue_context` | Full issue + related keys + comments (no playbook text) |
 | `jira_get_issue` | Single issue JSON; optional `fields` and `expand` |
 | `jira_search` | JQL search (up to 50 hits) |
@@ -135,7 +157,7 @@ Copy **`.cursor/rules/jira-plan-then-build.mdc`** into **application repos** whe
 
 ## Using it in chat
 
-- **`KAN-3`** — agent calls **`jira_ticket_plan_then_build`**, plans without edits, asks approval, then implements with PR-ready finish.
+- **`KAN-3`** — agent calls **`jira_start_ticket`** (or legacy **`jira_ticket_plan_then_build`**), plans without edits, asks approval, then implements with PR-ready finish.
 - **`KAN-3 fast`** or **`KAN-3 ship`** — same tool with **`delivery_mode`: `"fast"`** for fewer round-trips (use **Agent** mode for edits).
 - **Ad hoc:** *“Summarize **ABC-42**.”* — **`jira_get_issue_context`** is fine.
 

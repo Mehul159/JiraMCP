@@ -1,9 +1,12 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";import { randomBytes } from "node:crypto";
+import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 
 export type StoredDeviceCredential = {
   email: string;
   apiToken: string;
+  github_token?: string;
+  gitlab_token?: string;
   createdAt: string;
 };
 
@@ -48,7 +51,6 @@ export function saveStoreAtomic(dir: string, payload: DeviceFilePayload) {
   renameSync(tmp, path);
 }
 
-/** Prefix lets ops grep logs without confusing tokens with other secrets. */
 export function generateDeviceToken(): string {
   return `jmcp_${randomBytes(32).toString("base64url")}`;
 }
@@ -57,12 +59,15 @@ export function registerDevice(
   dir: string,
   email: string,
   apiToken: string,
+  git?: { github_token?: string; gitlab_token?: string },
 ): string {
   const token = generateDeviceToken();
   const payload = loadStore(dir);
   payload.devices[token] = {
     email: email.trim(),
     apiToken,
+    github_token: git?.github_token?.trim() || undefined,
+    gitlab_token: git?.gitlab_token?.trim() || undefined,
     createdAt: new Date().toISOString(),
   };
   saveStoreAtomic(dir, payload);

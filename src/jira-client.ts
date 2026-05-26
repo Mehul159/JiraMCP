@@ -6,7 +6,7 @@ export type JiraConfig = {
   apiToken: string;
 };
 
-function normalizeBaseUrl(url: string): string {
+export function normalizeBaseUrl(url: string): string {
   return url.replace(/\/+$/, "");
 }
 

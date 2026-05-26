@@ -66,6 +66,8 @@ ${needSecret ? `<p class="small">You need the team <strong>setup secret</strong>
 <form method="post" action="/setup/register">
 <label>Atlassian email<input type="email" name="email" required autocomplete="username"/></label>
 <label>API token <span class="small">(<a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" rel="noopener">create</a>)</span><input type="password" name="api_token" required autocomplete="current-password"/></label>
+<label class="small">GitHub PAT (optional, for JiraFlow MR)<input type="password" name="github_token" autocomplete="off"/></label>
+<label class="small">GitLab token (optional)<input type="password" name="gitlab_token" autocomplete="off"/></label>
 ${needSecret ? `<label>Setup secret<input type="password" name="setup_secret" required autocomplete="off"/></label>` : ""}
 <button type="submit">Create device token</button>
 </form>
@@ -84,13 +86,24 @@ ${needSecret ? `<label>Setup secret<input type="password" name="setup_secret" re
     const email = typeof req.body?.email === "string" ? req.body.email.trim() : "";
     const apiToken =
       typeof req.body?.api_token === "string" ? req.body.api_token.trim() : "";
+    const githubToken =
+      typeof req.body?.github_token === "string"
+        ? req.body.github_token.trim()
+        : "";
+    const gitlabToken =
+      typeof req.body?.gitlab_token === "string"
+        ? req.body.gitlab_token.trim()
+        : "";
     if (!email || !apiToken || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       res.status(400).send("Invalid email or token.");
       return;
     }
     let token: string;
     try {
-      token = registerDevice(storeDir, email, apiToken);
+      token = registerDevice(storeDir, email, apiToken, {
+        github_token: githubToken || undefined,
+        gitlab_token: gitlabToken || undefined,
+      });
     } catch (e) {
       console.error(e);
       res.status(500).send("Could not save device binding.");

@@ -1,0 +1,18 @@
+jira:
+  project_key: KAN
+  # branch_field: customfield_10001
+  # parent_branch_field: customfield_10002
+
+git:
+  provider: github
+  default_base_branch: main
+  branching:
+    feature_pattern: "{type}/{ticket}-{slug}"
+
+workflow:
+  approval_mode: smart
+  auto_generate_plan: true
+  auto_generate_context: true
+  validate_scripts:
+    - npm run build
+    - npm test

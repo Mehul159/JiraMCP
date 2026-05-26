@@ -4,13 +4,11 @@ import type { Request, Response } from "express";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import {
-  hostedDefaultJiraSiteUrl,
-  resolveHostedJiraConfig,
-} from "./jira-client.js";
+import { hostedDefaultJiraSiteUrl } from "./jira-client.js";
+import { resolveHostedRequestContext } from "./jira/hosted-auth.js";
 import { deviceStoreDir, getDeviceCredential } from "./device-store.js";
 import { InMemoryEventStore } from "./in-memory-event-store.js";
-import { withJiraRequestContext } from "./request-context.js";
+import { withRequestContext } from "./request-context.js";
 import { createJiraMcpServer } from "./server-core.js";
 import { mountSetupRoutes } from "./setup-ui.js";
 
@@ -95,8 +93,8 @@ type TransportRecord = {
 
 const transports: Record<string, TransportRecord> = {};
 
-function jiraFromRequest(req: Request) {
-  return resolveHostedJiraConfig(
+function requestContextFromRequest(req: Request) {
+  return resolveHostedRequestContext(
     req.headers,
     defaultSiteUrl || undefined,
     (tok) => getDeviceCredential(deviceDir, tok),
@@ -123,12 +121,12 @@ function sessionHeader(req: Request): string | undefined {
 }
 
 app.get("/health", (_req: Request, res: Response) => {
-  res.json({ ok: true, service: "jira-mcp" });
+  res.json({ ok: true, service: "jira-mcp", version: "2.0.0" });
 });
 
 const mcpPostHandler = async (req: Request, res: Response) => {
-  const cfg = jiraFromRequest(req);
-  if (!cfg) {
+  const ctx = requestContextFromRequest(req);
+  if (!ctx) {
     authError(res);
     return;
   }
@@ -136,7 +134,7 @@ const mcpPostHandler = async (req: Request, res: Response) => {
   const sessionId = sessionHeader(req);
 
   try {
-    await withJiraRequestContext(cfg, async () => {
+    await withRequestContext(ctx, async () => {
       if (sessionId && transports[sessionId]) {
         const { transport } = transports[sessionId];
         await transport.handleRequest(req, res, req.body);
@@ -190,8 +188,8 @@ const mcpPostHandler = async (req: Request, res: Response) => {
 };
 
 const mcpGetHandler = async (req: Request, res: Response) => {
-  const cfg = jiraFromRequest(req);
-  if (!cfg) {
+  const ctx = requestContextFromRequest(req);
+  if (!ctx) {
     authError(res);
     return;
   }
@@ -202,14 +200,14 @@ const mcpGetHandler = async (req: Request, res: Response) => {
     return;
   }
 
-  await withJiraRequestContext(cfg, async () => {
+  await withRequestContext(ctx, async () => {
     await transports[sessionId].transport.handleRequest(req, res);
   });
 };
 
 const mcpDeleteHandler = async (req: Request, res: Response) => {
-  const cfg = jiraFromRequest(req);
-  if (!cfg) {
+  const ctx = requestContextFromRequest(req);
+  if (!ctx) {
     authError(res);
     return;
   }
@@ -220,7 +218,7 @@ const mcpDeleteHandler = async (req: Request, res: Response) => {
     return;
   }
 
-  await withJiraRequestContext(cfg, async () => {
+  await withRequestContext(ctx, async () => {
     await transports[sessionId].transport.handleRequest(req, res);
   });
 };

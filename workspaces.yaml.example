@@ -1,0 +1,7 @@
+# Copy to $JIRAFLOW_WORKSPACE_ROOT/workspaces.yaml on the hosted server.
+workspaces:
+  - id: jira-mcp
+    path: jira-mcp
+    provider: github
+    remote: your-org/jira-mcp
+    default_base_branch: main
