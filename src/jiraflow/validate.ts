@@ -7,6 +7,7 @@ const execFileAsync = promisify(execFile);
 export type ValidateResult = {
   passed: boolean;
   results: { script: string; ok: boolean; output: string }[];
+  warning?: string;
 };
 
 export async function validateChanges(
@@ -22,9 +23,12 @@ export async function validateChanges(
         {
           script: "(none configured)",
           ok: true,
-          output: "Add workflow.validate_scripts in .jiraflow.yaml to run lint/test.",
+          output:
+            "⚠️  No validate_scripts configured in .jiraflow.yaml. Add 'npm run lint', 'npm test', etc. to enable real validation.",
         },
       ],
+      warning:
+        "No validation scripts are configured. Add workflow.validate_scripts in .jiraflow.yaml to run real checks before committing.",
     };
   }
 

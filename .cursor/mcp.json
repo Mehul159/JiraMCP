@@ -1,10 +1,3 @@
 {
-  "mcpServers": {
-    "jira": {
-      "command": "node",
-      "args": ["dist/index.js"],
-      "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env"
-    }
-  }
+  "mcpServers": {}
 }

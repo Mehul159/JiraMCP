@@ -14,6 +14,13 @@ export const WORKFLOW_STATES = [
 
 export type WorkflowState = (typeof WORKFLOW_STATES)[number];
 
+export type PendingApproval = {
+  token: string;
+  action: string;
+  issued_at: string;
+  expires_at: string;
+};
+
 export type WorkflowStateFile = {
   ticket_number: string;
   state: WorkflowState;
@@ -21,6 +28,9 @@ export type WorkflowStateFile = {
   feature_branch?: string;
   parent_branch?: string;
   updated_at: string;
+  plan_approved?: boolean;
+  plan_approved_at?: string;
+  pending_approval?: PendingApproval;
 };
 
 const TRANSITIONS: Record<WorkflowState, WorkflowState[]> = {
@@ -80,7 +90,7 @@ export function assertTransition(
   };
 }
 
-function suggestToolForState(state: WorkflowState): string {
+export function suggestToolForState(state: WorkflowState): string {
   const map: Record<WorkflowState, string> = {
     ticket_loaded: "prepare_cursor_context",
     context_prepared: "workspace_setup",

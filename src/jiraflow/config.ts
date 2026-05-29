@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 
 export type ApprovalMode = "smart" | "strict" | "lenient";
@@ -114,9 +114,22 @@ export function resolveRepoRoot(opts: {
     const root = workspaceRootFromEnv();
     if (root) {
       const allowed = resolve(root);
-      if (!repoRoot.startsWith(allowed)) {
+      if (repoRoot !== allowed && !repoRoot.startsWith(allowed + sep)) {
         return {
           error: `repo_path must be under JIRAFLOW_WORKSPACE_ROOT (${allowed}).`,
+        };
+      }
+    } else {
+      // No workspace root configured — restrict to HOME or CWD to prevent
+      // running git operations on arbitrary filesystem paths (e.g. "/").
+      const home = resolve(process.env.HOME ?? process.env.USERPROFILE ?? "");
+      const cwd = resolve(process.cwd());
+      const underHome =
+        home && (repoRoot === home || repoRoot.startsWith(home + sep));
+      const underCwd = repoRoot === cwd || repoRoot.startsWith(cwd + sep);
+      if (!underHome && !underCwd) {
+        return {
+          error: `repo_path "${repoRoot}" is outside the home/working directory. Set JIRAFLOW_WORKSPACE_ROOT to allow other paths.`,
         };
       }
     }

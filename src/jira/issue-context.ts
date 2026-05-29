@@ -86,8 +86,14 @@ export async function fetchIssueContextBundle(
 }
 
 export function normalizeIssueKey(raw: string): string {
-  const t = raw.trim();
-  const m = t.match(/^([A-Za-z][A-Za-z0-9]*)-(\d+)$/);
-  if (!m) return t.toUpperCase();
+  const t = raw.trim().replace(/^#/, "");
+  // Tolerate "PROJ 123" (space instead of dash).
+  const spaceNorm = t.replace(/^([A-Za-z][A-Za-z0-9]*)\s+(\d+)$/, "$1-$2");
+  const m = spaceNorm.match(/^([A-Za-z][A-Za-z0-9]*)-(\d+)$/);
+  if (!m) {
+    throw new Error(
+      `"${raw}" is not a valid Jira issue key. Expected format: PROJ-123.`,
+    );
+  }
   return `${m[1].toUpperCase()}-${m[2]}`;
 }

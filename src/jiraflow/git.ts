@@ -54,6 +54,27 @@ export async function createFeatureBranch(opts: {
   return { branch };
 }
 
+function buildCommitMessage(
+  key: string,
+  summary: string,
+  issueType: string,
+  message_override?: string,
+): string {
+  if (message_override?.trim()) return message_override.trim();
+
+  const typeMap: Record<string, string> = {
+    bug: "fix",
+    story: "feat",
+    task: "chore",
+    epic: "feat",
+    improvement: "refactor",
+    subtask: "chore",
+  };
+  const prefix = typeMap[issueType.toLowerCase()] ?? "chore";
+  const slug = summary.slice(0, 72 - key.length - prefix.length - 5).trim();
+  return `${prefix}: ${slug}\n\nJira: ${key}`;
+}
+
 export async function commitWithContext(opts: {
   repoRoot: string;
   intelligence: TicketIntelligence;
@@ -62,10 +83,12 @@ export async function commitWithContext(opts: {
   const git = gitClient(opts.repoRoot);
   const status = await git.status();
   const key = opts.intelligence.issue.key ?? "TICKET";
-  const diffStat = await git.diff(["--stat"]);
-  const commit_message =
-    opts.message_override?.trim() ||
-    `${key}: ${opts.intelligence.summary}\n\n${diffStat.slice(0, 500)}`.trim();
+  const commit_message = buildCommitMessage(
+    key,
+    opts.intelligence.summary,
+    opts.intelligence.issue_type,
+    opts.message_override,
+  );
 
   if (status.files.length === 0) {
     return { commit_message, committed: false };

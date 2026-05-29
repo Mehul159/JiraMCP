@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod";
-import type { JiraConfig } from "../jira-client.js";
+import { jiraFetch, type JiraConfig } from "../jira-client.js";
 import { normalizeIssueKey } from "../jira/issue-context.js";
 import { getRequestDeviceId, getRequestGitCredentials } from "../request-context.js";
 import { checkApproval } from "./approval.js";
@@ -20,6 +20,7 @@ import {
   initState,
   loadState,
   saveState,
+  suggestToolForState,
   type WorkflowState,
 } from "./state.js";
 import { validateChanges } from "./validate.js";
@@ -30,6 +31,24 @@ const workspaceInputs = {
   workspace_id: z.string().optional().describe("Hosted workspace id from workspaces.yaml"),
   repo_path: z.string().optional().describe("Local absolute path to git repo (stdio)"),
 };
+
+/** Normalize an issue key, returning an MCP error result instead of throwing. */
+function safeNormalizeKey(
+  raw: string,
+): { ok: true; key: string } | { ok: false; result: ReturnType<typeof toMcpContent> } {
+  try {
+    return { ok: true, key: normalizeIssueKey(raw) };
+  } catch (e) {
+    return {
+      ok: false,
+      result: toMcpContent(
+        fail(e instanceof Error ? e.message : String(e), {
+          recovery_steps: ["Pass a valid Jira issue key like PROJ-123."],
+        }),
+      ),
+    };
+  }
+}
 
 const PLAN_THEN_BUILD_PLAYBOOK_STANDARD = `## Jira workflow (plan → gate → implement → PR)
 
@@ -87,60 +106,122 @@ export function registerJiraflowTools(
     "jira_start_ticket",
     {
       description:
-        "JiraFlow entry: load ticket intelligence, init workflow state, optional auto plan/context.",
+        "START HERE for any Jira ticket. Say 'start ticket PROJ-123', 'work on ABC-99', 'pick up my Jira task', 'begin issue X'. Loads ticket data, generates implementation plan, and builds Cursor context. Always call this first — it returns a plan you MUST review before coding.",
       inputSchema: z.object({
         ticket_number: z.string(),
         dry_run: z.boolean().optional(),
+        context_mode: z
+          .enum(["full", "plan_only", "context_only", "minimal"])
+          .optional()
+          .describe(
+            "'full' (default) = plan + context. 'plan_only' = skip context pack. 'context_only' = skip plan. 'minimal' = ticket data only, fastest.",
+          ),
         ...workspaceInputs,
       }),
     },
-    async ({ ticket_number, dry_run, workspace_id, repo_path }) => {
-      const ticket = normalizeIssueKey(ticket_number);
+    async ({ ticket_number, dry_run, context_mode, workspace_id, repo_path }) => {
+      const norm = safeNormalizeKey(ticket_number);
+      if (!norm.ok) return norm.result;
+      const ticket = norm.key;
       const cfg = getCfg();
+      const mode = context_mode ?? "full";
       try {
         const intelligence = await buildTicketIntelligence(cfg, ticket);
         const ws = resolveWorkspace({ workspace_id, repo_path });
         let context_pack: string | undefined;
+        let context_files: string[] = [];
+        let context_keywords: string[] = [];
         let implementation_plan: string | undefined;
         let recommended_parent_branch: string | undefined;
 
         if (!("error" in ws)) {
           const cfgRepo = ws.ok.config;
+
+          // Deduplication guard — don't silently overwrite an active workflow.
+          const existing = loadState(ws.ok.repoRoot);
+          if (
+            existing &&
+            existing.ticket_number === ticket &&
+            existing.state !== "workflow_complete" &&
+            !dry_run
+          ) {
+            return toMcpContent(
+              ok(
+                `Ticket ${ticket} already has an active workflow (state: ${existing.state}).`,
+                {
+                  ticket_number: ticket,
+                  existing_state: existing,
+                  warning:
+                    "This ticket already has an active workflow. Pass dry_run: true to preview without overwriting, or call jiraflow_workspace_status to see current state.",
+                  suggested_tool: suggestToolForState(existing.state),
+                },
+              ),
+            );
+          }
+
           if (!dry_run) {
             saveState(ws.ok.repoRoot, {
               ...initState(ticket, workspace_id),
               updated_at: new Date().toISOString(),
             });
           }
-          if (cfgRepo.workflow.auto_generate_context) {
+          if (
+            (mode === "full" || mode === "context_only") &&
+            cfgRepo.workflow.auto_generate_context
+          ) {
             const ctx = await generateCursorContext({
               intelligence,
               repoRoot: ws.ok.repoRoot,
             });
             context_pack = ctx.markdown;
-            if (!dry_run) advanceState(ws.ok.repoRoot, ticket, "context_prepared");
+            context_files = ctx.files_to_read;
+            context_keywords = ctx.keywords;
+            if (!dry_run) {
+              const advance = advanceState(ws.ok.repoRoot, ticket, "context_prepared");
+              if (!advance.ok) {
+                console.error("[jiraflow] state advance warning:", advance.message);
+              }
+            }
           }
-          if (cfgRepo.workflow.auto_generate_plan) {
+          if (
+            (mode === "full" || mode === "plan_only") &&
+            cfgRepo.workflow.auto_generate_plan
+          ) {
             implementation_plan = generateImplementationPlan({
               intelligence,
               context: context_pack
-                ? { markdown: context_pack, files_to_read: [], keywords: [] }
+                ? {
+                    markdown: context_pack,
+                    files_to_read: context_files,
+                    keywords: context_keywords,
+                  }
                 : undefined,
             });
           }
-          recommended_parent_branch =
-            cfgRepo.git.default_base_branch ?? "main";
+          recommended_parent_branch = cfgRepo.git.default_base_branch ?? "main";
         }
 
         return toMcpContent(
-          ok(`Ticket ${ticket} loaded.`, {
+          ok(`Ticket ${ticket} loaded. STOP — review plan before coding.`, {
             ticket_number: ticket,
             state: dry_run ? "dry_run" : "ticket_loaded",
+            context_mode: mode,
             intelligence,
             context_pack,
             implementation_plan,
             recommended_parent_branch,
             dry_run: Boolean(dry_run),
+            next_action: {
+              required: true,
+              instruction:
+                "Present the implementation_plan to the developer and ask for explicit approval before calling workspace_setup or create_feature_branch. Do NOT edit any files until approved. When the developer approves, call approve_plan.",
+              approved_tool: "approve_plan",
+              blocked_until_approved: [
+                "workspace_setup",
+                "create_feature_branch",
+                "commit_with_context",
+              ],
+            },
           }),
         );
       } catch (e) {
@@ -156,7 +237,8 @@ export function registerJiraflowTools(
   server.registerTool(
     "prepare_cursor_context",
     {
-      description: "Build high-signal Cursor context pack from ticket + repo impact.",
+      description:
+        "Build focused Cursor context for a ticket. Use when developer says 'get context for X', 'what files are relevant to X', 'prepare workspace context', 'focus areas for this ticket'. Returns files to read + keywords + markdown context pack.",
       inputSchema: z.object({
         ticket_number: z.string(),
         focus_areas: z.array(z.string()).optional(),
@@ -164,7 +246,9 @@ export function registerJiraflowTools(
       }),
     },
     async ({ ticket_number, focus_areas, workspace_id, repo_path }) => {
-      const ticket = normalizeIssueKey(ticket_number);
+      const norm = safeNormalizeKey(ticket_number);
+      if (!norm.ok) return norm.result;
+      const ticket = norm.key;
       const cfg = getCfg();
       try {
         const intelligence = await buildTicketIntelligence(cfg, ticket);
@@ -196,14 +280,17 @@ export function registerJiraflowTools(
   server.registerTool(
     "generate_implementation_plan",
     {
-      description: "Structured implementation plan markdown for the ticket.",
+      description:
+        "Create a structured implementation plan before any coding. Use when developer says 'make a plan', 'break down the ticket', 'how should I approach X', 'what are the steps'. Returns step-by-step plan with acceptance criteria, test strategy, and risks. ALWAYS present this to the developer and get approval before implementation.",
       inputSchema: z.object({
         ticket_number: z.string(),
         ...workspaceInputs,
       }),
     },
     async ({ ticket_number, workspace_id, repo_path }) => {
-      const ticket = normalizeIssueKey(ticket_number);
+      const norm = safeNormalizeKey(ticket_number);
+      if (!norm.ok) return norm.result;
+      const ticket = norm.key;
       try {
         const intelligence = await buildTicketIntelligence(getCfg(), ticket);
         const ws = resolveWorkspace({ workspace_id, repo_path });
@@ -216,7 +303,15 @@ export function registerJiraflowTools(
         }
         const plan = generateImplementationPlan({ intelligence, context });
         return toMcpContent(
-          ok("Plan generated.", { implementation_plan: plan }),
+          ok("Plan generated. STOP — get developer approval before implementation.", {
+            implementation_plan: plan,
+            next_action: {
+              required: true,
+              instruction:
+                "Show this plan to the developer. Ask: 'Does this look correct? Should I proceed?' Do not call workspace_setup until they approve via approve_plan.",
+              approved_tool: "approve_plan",
+            },
+          }),
         );
       } catch (e) {
         return toMcpContent(
@@ -229,20 +324,80 @@ export function registerJiraflowTools(
   );
 
   server.registerTool(
+    "approve_plan",
+    {
+      description:
+        "Developer explicitly approves the implementation plan. Call this when developer says 'looks good', 'proceed', 'approved', 'go ahead', 'yes implement it', 'start coding'. This unlocks workspace_setup and branch creation.",
+      inputSchema: z.object({
+        ticket_number: z.string(),
+        notes: z
+          .string()
+          .optional()
+          .describe("Optional developer notes or adjustments to the plan"),
+        ...workspaceInputs,
+      }),
+    },
+    async ({ ticket_number, notes, workspace_id, repo_path }) => {
+      const norm = safeNormalizeKey(ticket_number);
+      if (!norm.ok) return norm.result;
+      const ticket = norm.key;
+      const ws = resolveWorkspace({ workspace_id, repo_path });
+      if ("error" in ws) {
+        return toMcpContent(fail(ws.error, { recovery_steps: [] }));
+      }
+      const current = loadState(ws.ok.repoRoot);
+      const now = new Date().toISOString();
+      saveState(ws.ok.repoRoot, {
+        ...(current ?? initState(ticket, workspace_id)),
+        ticket_number: ticket,
+        state: "context_prepared",
+        plan_approved: true,
+        plan_approved_at: now,
+        updated_at: now,
+      });
+      return toMcpContent(
+        ok("Plan approved. You may now call workspace_setup to begin implementation.", {
+          ticket_number: ticket,
+          state: "context_prepared",
+          plan_approved: true,
+          notes: notes ?? null,
+          next_tool: "workspace_setup",
+        }),
+      );
+    },
+  );
+
+  server.registerTool(
     "workspace_setup",
     {
-      description: "Fetch and checkout parent/base branch for the ticket.",
+      description:
+        "Fetch remote and checkout the correct base/parent branch. Use when developer says 'setup workspace', 'get the repo ready', 'checkout base branch', 'pull latest'. Call AFTER plan is approved, BEFORE creating a feature branch.",
       inputSchema: z.object({
         ticket_number: z.string(),
         ...workspaceInputs,
       }),
     },
     async ({ ticket_number, workspace_id, repo_path }) => {
-      const ticket = normalizeIssueKey(ticket_number);
+      const norm = safeNormalizeKey(ticket_number);
+      if (!norm.ok) return norm.result;
+      const ticket = norm.key;
       const ws = resolveWorkspace({ workspace_id, repo_path });
       if ("error" in ws) {
         return toMcpContent(
           fail(ws.error, { recovery_steps: ["Set JIRAFLOW_WORKSPACE_ROOT and workspaces.yaml."] }),
+        );
+      }
+      const state = ws.ok.state;
+      if (state && !state.plan_approved) {
+        return toMcpContent(
+          fail("Plan must be approved before workspace setup.", {
+            recovery_steps: [
+              "Call generate_implementation_plan or jira_start_ticket first.",
+              "Present the plan to the developer.",
+              "Call approve_plan once they confirm.",
+            ],
+            suggested_tool: "generate_implementation_plan",
+          }),
         );
       }
       try {
@@ -278,7 +433,8 @@ export function registerJiraflowTools(
   server.registerTool(
     "create_feature_branch",
     {
-      description: "Create feature branch from config pattern.",
+      description:
+        "Create a correctly-named feature branch from the base branch. Use when developer says 'create branch', 'make a feature branch', 'start a branch for X'. Requires workspace_setup to have run first.",
       inputSchema: z.object({
         ticket_number: z.string(),
         approval_token: z.string().optional(),
@@ -286,7 +442,9 @@ export function registerJiraflowTools(
       }),
     },
     async ({ ticket_number, workspace_id, repo_path, approval_token }) => {
-      const ticket = normalizeIssueKey(ticket_number);
+      const norm = safeNormalizeKey(ticket_number);
+      if (!norm.ok) return norm.result;
+      const ticket = norm.key;
       const ws = resolveWorkspace({ workspace_id, repo_path });
       if ("error" in ws) {
         return toMcpContent(fail(ws.error, { recovery_steps: [] }));
@@ -297,6 +455,7 @@ export function registerJiraflowTools(
         approval_token,
         ticket_number: ticket,
         workspace_id,
+        repoRoot: ws.ok.repoRoot,
       });
       if (!approval.approved) {
         return toMcpContent(
@@ -331,7 +490,8 @@ export function registerJiraflowTools(
   server.registerTool(
     "commit_with_context",
     {
-      description: "Stage all changes and commit with ticket-aware message.",
+      description:
+        "Stage all changes and commit with a smart ticket-aware message. Use when developer says 'commit', 'save my changes', 'commit my work', 'commit with context'. Generates a conventional commit message from ticket summary. Run validate_changes first if not done.",
       inputSchema: z.object({
         ticket_number: z.string().optional(),
         message_override: z.string().optional(),
@@ -350,19 +510,22 @@ export function registerJiraflowTools(
       if ("error" in ws) {
         return toMcpContent(fail(ws.error, { recovery_steps: [] }));
       }
-      const ticket =
-        normalizeIssueKey(ticket_number ?? ws.ok.state?.ticket_number ?? "");
-      if (!ticket || ticket === "") {
+      const rawTicket = ticket_number ?? ws.ok.state?.ticket_number ?? "";
+      if (!rawTicket.trim()) {
         return toMcpContent(
           fail("ticket_number required.", { recovery_steps: ["Pass ticket_number."] }),
         );
       }
+      const norm = safeNormalizeKey(rawTicket);
+      if (!norm.ok) return norm.result;
+      const ticket = norm.key;
       const approval = checkApproval({
         mode: ws.ok.config.workflow.approval_mode,
         action: "commit",
         approval_token,
         ticket_number: ticket,
         workspace_id,
+        repoRoot: ws.ok.repoRoot,
       });
       if (!approval.approved) {
         return toMcpContent(
@@ -395,7 +558,8 @@ export function registerJiraflowTools(
   server.registerTool(
     "validate_changes",
     {
-      description: "Run validate_scripts from .jiraflow.yaml.",
+      description:
+        "Run lint, type-check, and test scripts configured in .jiraflow.yaml. Use when developer says 'validate', 'run checks', 'lint my code', 'run tests', 'check before commit'. Returns pass/fail per script with output.",
       inputSchema: z.object({
         long_running: z.boolean().optional(),
         ...workspaceInputs,
@@ -432,7 +596,8 @@ export function registerJiraflowTools(
   server.registerTool(
     "create_merge_request",
     {
-      description: "Push branch and open GitHub PR or GitLab MR.",
+      description:
+        "Push branch and open a GitHub PR or GitLab MR with full ticket context in the description. Use when developer says 'open PR', 'create MR', 'submit merge request', 'push and raise PR', 'I am done coding'.",
       inputSchema: z.object({
         ticket_number: z.string(),
         approval_token: z.string().optional(),
@@ -440,7 +605,9 @@ export function registerJiraflowTools(
       }),
     },
     async ({ ticket_number, workspace_id, repo_path, approval_token }) => {
-      const ticket = normalizeIssueKey(ticket_number);
+      const norm = safeNormalizeKey(ticket_number);
+      if (!norm.ok) return norm.result;
+      const ticket = norm.key;
       const ws = resolveWorkspace({ workspace_id, repo_path });
       if ("error" in ws) {
         return toMcpContent(fail(ws.error, { recovery_steps: [] }));
@@ -451,6 +618,7 @@ export function registerJiraflowTools(
         approval_token,
         ticket_number: ticket,
         workspace_id,
+        repoRoot: ws.ok.repoRoot,
       });
       if (!approval.approved) {
         return toMcpContent(
@@ -496,7 +664,8 @@ export function registerJiraflowTools(
   server.registerTool(
     "jiraflow_workspace_status",
     {
-      description: "List registered workspaces and local workflow state.",
+      description:
+        "Show registered workspaces and current workflow state. Use when developer says 'show status', 'where am I in the flow', 'what workspaces are configured', 'list workspaces', 'show current state'.",
       inputSchema: z.object({
         workspace_id: z.string().optional(),
         repo_path: z.string().optional(),
@@ -520,6 +689,128 @@ export function registerJiraflowTools(
         data.config = ws.ok.config;
       }
       return toMcpContent(ok("Workspace status.", data));
+    },
+  );
+
+  server.registerTool(
+    "update_jira_status",
+    {
+      description:
+        "Update a Jira ticket's status by performing a workflow transition. Use when developer says 'move ticket to <status>', 'mark as in progress', 'submit merge request', 'close the ticket', 'update Jira status'. Accepts either the TARGET status name (e.g. 'In Progress', 'Merge Requested', 'QA Testing In Progress') or the transition name (e.g. 'Dev started', 'Merge request submitted'); matching is done against the project's live transitions. Transitions into a terminal status (Closed, Rejected, Done, Cancelled) require approval.",
+      inputSchema: z.object({
+        ticket_number: z.string(),
+        status: z
+          .string()
+          .describe(
+            "Target status name or transition name. Matched against the ticket's available transitions returned by Jira.",
+          ),
+        approval_token: z.string().optional(),
+        ...workspaceInputs,
+      }),
+    },
+    async ({ ticket_number, status, approval_token, workspace_id, repo_path }) => {
+      const norm = safeNormalizeKey(ticket_number);
+      if (!norm.ok) return norm.result;
+      const ticket = norm.key;
+      const cfg = getCfg();
+
+      try {
+        const transitions = await jiraFetch<{
+          transitions: {
+            id: string;
+            name: string;
+            to?: { id: string; name: string };
+          }[];
+        }>(cfg, `/rest/api/3/issue/${encodeURIComponent(ticket)}/transitions`);
+
+        const want = status.trim().toLowerCase();
+        // Prefer matching on the TARGET status name (workflow-agnostic), since
+        // transition names often differ from the status they lead to
+        // (e.g. "Dev started" -> "In Progress").
+        const match =
+          transitions.transitions.find(
+            (t) => t.to?.name.toLowerCase() === want,
+          ) ??
+          transitions.transitions.find((t) => t.name.toLowerCase() === want) ??
+          transitions.transitions.find((t) =>
+            t.to?.name.toLowerCase().includes(want),
+          ) ??
+          transitions.transitions.find((t) =>
+            t.name.toLowerCase().includes(want),
+          );
+
+        if (!match) {
+          return toMcpContent(
+            fail(`No transition matching "${status}" is available from the ticket's current status.`, {
+              available_transitions: transitions.transitions.map((t) => ({
+                transition: t.name,
+                to: t.to?.name ?? null,
+              })),
+              recovery_steps: [
+                "Pick a value from available_transitions (either the transition name or its 'to' status).",
+                "Jira only offers transitions valid from the current status — the ticket may need an intermediate step first.",
+              ],
+            }),
+          );
+        }
+
+        const targetName = match.to?.name ?? status;
+        const TERMINAL = new Set(["closed", "rejected", "done", "cancelled", "canceled", "won't do", "wont do"]);
+        const isHighRisk = TERMINAL.has(targetName.toLowerCase());
+        if (isHighRisk) {
+          const ws = resolveWorkspace({ workspace_id, repo_path });
+          const repoRoot = "error" in ws ? undefined : ws.ok.repoRoot;
+          const mode = "error" in ws ? "smart" : ws.ok.config.workflow.approval_mode;
+          const approval = checkApproval({
+            mode,
+            action: "jira_done",
+            approval_token,
+            ticket_number: ticket,
+            workspace_id,
+            repoRoot,
+          });
+          if (!approval.approved) {
+            return toMcpContent(
+              fail(`Approval required to move ${ticket} to terminal status "${targetName}".`, {
+                approval_required: true,
+                prompt: `About to move ${ticket} to "${targetName}" (terminal). Confirm with the developer, then re-call with approval_token.`,
+                approval_token: approval.approval_token,
+              }),
+            );
+          }
+        }
+
+        await jiraFetch(
+          cfg,
+          `/rest/api/3/issue/${encodeURIComponent(ticket)}/transitions`,
+          {
+            method: "POST",
+            body: JSON.stringify({ transition: { id: match.id } }),
+          },
+        );
+        auditLog("update_jira_status", {
+          ticket,
+          status: targetName,
+          transition: match.name,
+          device: getRequestDeviceId(),
+        });
+        return toMcpContent(
+          ok(`Ticket ${ticket} moved to "${targetName}" via "${match.name}".`, {
+            ticket,
+            status: targetName,
+            transition_name: match.name,
+            transition_id: match.id,
+          }),
+        );
+      } catch (e) {
+        return toMcpContent(
+          fail(e instanceof Error ? e.message : String(e), {
+            recovery_steps: [
+              "Verify Jira credentials and that you have transition permission.",
+            ],
+          }),
+        );
+      }
     },
   );
 }

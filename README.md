@@ -122,23 +122,50 @@ Copy **`.cursor/rules/jira-plan-then-build.mdc`** into **application repos** whe
 
 Deterministic **ticket → context → git → MR** orchestration. All JiraFlow tools return JSON: `{ "success", "message", "data" }`.
 
-**Workflow:** `jira_start_ticket` → `prepare_cursor_context` → `workspace_setup` → `create_feature_branch` → (code) → `validate_changes` → `commit_with_context` → `create_merge_request`
+**Workflow:** `jira_start_ticket` → review plan → `approve_plan` → `workspace_setup` → `create_feature_branch` → (code) → `validate_changes` → `commit_with_context` → `create_merge_request` → `update_jira_status`
 
 | Tool | Use |
 |------|-----|
-| `jira_start_ticket` | Load ticket intelligence, init `.jiraflow/state.json` |
-| `prepare_cursor_context` | High-signal markdown + `files_to_read` from repo grep |
-| `generate_implementation_plan` | Structured plan markdown |
-| `workspace_setup` | Checkout parent/base branch |
+| `jira_start_ticket` | Load ticket intelligence, plan + context; init `.jiraflow/state.json`. Returns a plan you MUST review. Supports `context_mode` (`full`/`plan_only`/`context_only`/`minimal`) |
+| `prepare_cursor_context` | Focused markdown + ranked `files_to_read` from parallel repo grep |
+| `generate_implementation_plan` | Adaptive plan (per issue type + content) with `complexity_estimate` |
+| `approve_plan` | Human gate — unlocks `workspace_setup` after the developer approves |
+| `workspace_setup` | Checkout parent/base branch (blocked until plan approved) |
 | `create_feature_branch` | Branch from `.jiraflow.yaml` pattern |
-| `commit_with_context` | Ticket-aware commit message |
-| `validate_changes` | Run `workflow.validate_scripts` |
-| `create_merge_request` | GitHub PR / GitLab MR |
+| `commit_with_context` | Conventional-commit message (`fix:`/`feat:` + `Jira: KEY`) |
+| `validate_changes` | Run `workflow.validate_scripts` (warns if none configured) |
+| `create_merge_request` | GitHub PR / GitLab MR with acceptance criteria + linked issues |
+| `update_jira_status` | Transition the ticket — matches your project's live transitions by target status or transition name; terminal statuses (Closed/Rejected/Done) require approval |
 | `jiraflow_workspace_status` | List hosted workspaces + state |
 
 Copy [`.jiraflow.yaml.example`](.jiraflow.yaml.example) to app repos as `.jiraflow.yaml`. Hosted: set `JIRAFLOW_WORKSPACE_ROOT`, clone repos, copy [`workspaces.yaml.example`](workspaces.yaml.example) to `workspaces.yaml`. Optional GitHub/GitLab tokens via `/setup` or env.
 
 Design: [`docs/superpowers/specs/2026-05-27-jiraflow-design.md`](docs/superpowers/specs/2026-05-27-jiraflow-design.md)
+
+### Using JiraFlow in Cursor
+
+1. Open Cursor in your repo.
+2. In the AI chat, say: **"start ticket PROJ-123"**.
+3. JiraFlow loads the ticket, generates a plan, and shows you:
+   - Summary, acceptance criteria, risks
+   - Relevant files in your codebase
+   - Step-by-step implementation plan + complexity estimate
+4. **Review the plan.** Say **"looks good, proceed"** to approve it (`approve_plan`).
+5. JiraFlow checks out the right base branch and creates your feature branch.
+6. Code your changes. Say **"validate"** to run lint/tests.
+7. Say **"commit"** → **"open PR"** → **"move to done"** to finish.
+
+You never need to leave Cursor.
+
+### The Context Engine
+
+JiraFlow's context engine does three things Cursor can't do alone:
+
+1. **Ticket intelligence** — fetches the full Jira ticket including linked issues, subtasks, and comments, converting Jira's ADF format (bullet lists, panels, code blocks, tables, headings) to clean readable text.
+2. **Impact grep** — scans your codebase for files containing keywords from the ticket, running all keywords in parallel and ranking files by keyword-match frequency, so Cursor knows exactly which files are relevant before you open any.
+3. **Adaptive plan** — generates an implementation plan tailored to the issue type (bug vs story vs task), ticket content (migrations, API changes, UI work), and linked issues — not generic boilerplate.
+
+This means Cursor gets a focused, high-signal context pack instead of exploring the codebase blindly.
 
 ## Tools you get (Jira read)
 
