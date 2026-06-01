@@ -15,6 +15,7 @@ import { buildTicketIntelligence } from "./intelligence.js";
 import { createMergeRequest } from "./mr.js";
 import { generateImplementationPlan } from "./plan.js";
 import { fail, ok, toMcpContent } from "./response.js";
+import { buildTestAuthoringPack } from "./test-authoring.js";
 import {
   assertTransition,
   initState,
@@ -807,6 +808,80 @@ export function registerJiraflowTools(
           fail(e instanceof Error ? e.message : String(e), {
             recovery_steps: [
               "Verify Jira credentials and that you have transition permission.",
+            ],
+          }),
+        );
+      }
+    },
+  );
+
+  server.registerTool(
+    "prepare_test_authoring",
+    {
+      description:
+        "Turn a Jira ticket into an automated-test authoring pack. Say 'write test cases for PROJ-123', 'automate ticket ABC-9', 'make automation test cases for X', 'generate cucumber/BDD tests for this ticket'. Give ONLY the Jira number — it reads the description, acceptance criteria, steps to reproduce, comments and linked issues into a knowledge base, then mines the repo's existing feature files, step definitions and locators/page-objects, finds the most similar existing scenarios to reuse, derives prerequisite/background steps, and returns a ready-to-finalize Gherkin feature skeleton. Pass repo_path or workspace_id pointing at the TEST AUTOMATION repo so it can mine existing assets.",
+      inputSchema: z.object({
+        ticket_number: z.string(),
+        focus_areas: z
+          .array(z.string())
+          .optional()
+          .describe("Optional extra keywords (feature/module names) to bias the repo search."),
+        persist_kb: z
+          .boolean()
+          .optional()
+          .describe("Write the knowledge-base markdown to .jiraflow/kb/<KEY>.md (default true)."),
+        ...workspaceInputs,
+      }),
+    },
+    async ({ ticket_number, focus_areas, persist_kb, workspace_id, repo_path }) => {
+      const norm = safeNormalizeKey(ticket_number);
+      if (!norm.ok) return norm.result;
+      const ticket = norm.key;
+      const cfg = getCfg();
+
+      const ws = resolveWorkspace({ workspace_id, repo_path });
+      const repoRoot = "error" in ws ? undefined : ws.ok.repoRoot;
+
+      try {
+        const intelligence = await buildTicketIntelligence(cfg, ticket);
+        const pack = await buildTestAuthoringPack({
+          intelligence,
+          repoRoot,
+          focus_areas,
+          persist_kb,
+        });
+        auditLog("prepare_test_authoring", {
+          ticket,
+          repoRoot: repoRoot ?? undefined,
+          similar: String(pack.similar_scenarios.length),
+          reusable_steps: String(pack.reusable_steps.length),
+          device: getRequestDeviceId(),
+        });
+        return toMcpContent(
+          ok(
+            repoRoot
+              ? `Built test authoring pack for ${ticket} (${pack.similar_scenarios.length} similar scenarios, ${pack.reusable_steps.length} reusable steps).`
+              : `Built test authoring pack for ${ticket} from Jira only — pass repo_path/workspace_id to mine existing tests.`,
+            {
+              ticket,
+              knowledge_base: pack.knowledge_base,
+              similar_scenarios: pack.similar_scenarios,
+              reusable_steps: pack.reusable_steps,
+              locator_files: pack.locator_files,
+              prerequisites: pack.prerequisites,
+              feature_skeleton: pack.feature_skeleton,
+              context_pack: pack.markdown,
+              kb_path: pack.kb_path ?? null,
+              next_action: pack.next_action,
+            },
+          ),
+        );
+      } catch (e) {
+        return toMcpContent(
+          fail(e instanceof Error ? e.message : String(e), {
+            recovery_steps: [
+              "Verify the Jira key exists and credentials are valid.",
+              "Pass repo_path (stdio) or workspace_id (hosted) to enable repo mining.",
             ],
           }),
         );

@@ -136,6 +136,7 @@ Deterministic **ticket → context → git → MR** orchestration. All JiraFlow 
 | `validate_changes` | Run `workflow.validate_scripts` (warns if none configured) |
 | `create_merge_request` | GitHub PR / GitLab MR with acceptance criteria + linked issues |
 | `update_jira_status` | Transition the ticket — matches your project's live transitions by target status or transition name; terminal statuses (Closed/Rejected/Done) require approval |
+| `prepare_test_authoring` | Turn a Jira number into a BDD/automation test pack — builds a ticket knowledge base, mines existing feature files / step definitions / locators, finds similar scenarios to reuse, derives prerequisite steps, and returns a ready-to-finalize Gherkin skeleton |
 | `jiraflow_workspace_status` | List hosted workspaces + state |
 
 Copy [`.jiraflow.yaml.example`](.jiraflow.yaml.example) to app repos as `.jiraflow.yaml`. Hosted: set `JIRAFLOW_WORKSPACE_ROOT`, clone repos, copy [`workspaces.yaml.example`](workspaces.yaml.example) to `workspaces.yaml`. Optional GitHub/GitLab tokens via `/setup` or env.
@@ -166,6 +167,25 @@ JiraFlow's context engine does three things Cursor can't do alone:
 3. **Adaptive plan** — generates an implementation plan tailored to the issue type (bug vs story vs task), ticket content (migrations, API changes, UI work), and linked issues — not generic boilerplate.
 
 This means Cursor gets a focused, high-signal context pack instead of exploring the codebase blindly.
+
+### Generating automated test cases from a Jira ticket
+
+`prepare_test_authoring` extends the context engine to BDD/automation work. Point it at your **test automation repo** (`repo_path` or `workspace_id`) and give it just a Jira number:
+
+```
+write test cases for BR-1234
+```
+
+It then:
+
+1. **Builds a knowledge base** from the ticket — summary, description, acceptance criteria, **steps to reproduce**, comments, and linked issues (saved to `.jiraflow/kb/<KEY>.md`).
+2. **Mines existing automation assets** — discovers `.feature` files, step-definition files (Cucumber JS/TS, Java/Kotlin annotations, Python behave/pytest-bdd), and locator/page-object files.
+3. **Finds similar scenarios** — scores existing scenarios by keyword overlap with the ticket so you reuse, not duplicate.
+4. **Extracts reusable steps** — surfaces matching `Given/When/Then` patterns to reuse verbatim.
+5. **Derives prerequisites** — collects `Background:` steps from related features.
+6. **Returns a Gherkin skeleton** — a ready-to-finalize feature built from the steps-to-reproduce and acceptance criteria.
+
+The agent then finalizes the skeleton into a feature file, reusing the listed steps/locators and writing only the genuinely new ones — instead of authoring tests from scratch.
 
 ## Tools you get (Jira read)
 

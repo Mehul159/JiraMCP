@@ -98,6 +98,36 @@ export function extractAcceptanceLines(text: string): string[] {
   return ac.slice(0, 20);
 }
 
+/** Extract a "Steps to Reproduce" / "Steps" section from a ticket description. */
+export function extractStepsToReproduce(text: string): string[] {
+  const lines = text.split(/\r?\n/).map((l) => l.trim());
+  const steps: string[] = [];
+  let inSection = false;
+
+  for (const line of lines) {
+    if (
+      /^(steps to reproduce|steps to repro|reproduction steps|repro steps|steps)\s*:?\s*$/i.test(
+        line,
+      )
+    ) {
+      inSection = true;
+      continue;
+    }
+    if (!inSection) continue;
+    if (line.length === 0) {
+      // Allow a single blank line inside the list; stop on a header.
+      continue;
+    }
+    // Stop when we hit another section header.
+    if (/^#+\s/.test(line) || /^(acceptance criteria|expected|actual result|expected result)\b/i.test(line)) {
+      break;
+    }
+    const cleaned = line.replace(/^[-*•]\s*/, "").replace(/^\d+[.)]\s*/, "").trim();
+    if (cleaned) steps.push(cleaned);
+  }
+  return steps.slice(0, 30);
+}
+
 const STOPWORDS = new Set([
   "the", "a", "an", "and", "or", "to", "for", "of", "in", "on", "is", "are", "was", "be",
   "with", "this", "that", "from", "as", "at", "by", "it", "we", "should", "will", "can",
