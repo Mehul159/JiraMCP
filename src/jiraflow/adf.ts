@@ -68,6 +68,36 @@ export function adfToPlainText(node: unknown, depth = 0): string {
   }
 }
 
+export type AdfMediaRef = {
+  id?: string;
+  collection?: string;
+  mediaType?: string;
+  alt?: string;
+};
+
+/**
+ * Walk an ADF tree and collect inline media node references (images/files
+ * pasted into the description or a comment). These carry a media-services id;
+ * we resolve the actual bytes via the issue's attachment list in media-context.
+ */
+export function extractMediaRefs(node: unknown, acc: AdfMediaRef[] = []): AdfMediaRef[] {
+  if (!node || typeof node !== "object") return acc;
+  const n = node as AdfNode;
+  if (n.type === "media") {
+    acc.push({
+      id: typeof n.attrs?.id === "string" ? n.attrs.id : undefined,
+      collection:
+        typeof n.attrs?.collection === "string" ? n.attrs.collection : undefined,
+      mediaType: typeof n.attrs?.type === "string" ? n.attrs.type : undefined,
+      alt: typeof n.attrs?.alt === "string" ? n.attrs.alt : undefined,
+    });
+  }
+  if (Array.isArray(n.content)) {
+    for (const c of n.content) extractMediaRefs(c, acc);
+  }
+  return acc;
+}
+
 export function extractAcceptanceLines(text: string): string[] {
   const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const ac: string[] = [];

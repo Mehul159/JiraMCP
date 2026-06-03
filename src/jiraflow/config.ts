@@ -20,6 +20,11 @@ export type JiraflowRepoConfig = {
     auto_generate_plan: boolean;
     auto_generate_context: boolean;
     validate_scripts: string[];
+    media_analysis?: {
+      enabled?: boolean;
+      mode?: "full" | "images_only" | "off";
+      max_files?: number;
+    };
   };
 };
 
@@ -91,6 +96,7 @@ export function loadRepoConfig(repoRoot: string): JiraflowRepoConfig {
         validate_scripts:
           doc.workflow?.validate_scripts ??
           DEFAULT_REPO_CONFIG.workflow.validate_scripts,
+        media_analysis: doc.workflow?.media_analysis,
       },
     };
   } catch {

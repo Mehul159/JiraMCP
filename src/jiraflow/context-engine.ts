@@ -18,10 +18,12 @@ export async function generateCursorContext(opts: {
 }): Promise<ContextPack> {
   const { intelligence } = opts;
   const acceptance = extractAcceptanceLines(intelligence.plain_description);
+  const mediaSummary = intelligence.media_context?.combined_summary ?? "";
   const keywords = [
     ...keywordsFromText(
       intelligence.summary,
       intelligence.plain_description,
+      mediaSummary,
       ...(opts.focus_areas ?? []),
     ),
     ...(opts.focus_areas ?? []).map((f) => f.toLowerCase()),
@@ -54,6 +56,9 @@ export async function generateCursorContext(opts: {
     "## Acceptance",
     acceptance.length ? acceptance.map((l) => `- ${l}`).join("\n") : "_None detected_",
     "",
+    ...(intelligence.media_context && intelligence.media_context.analyzed_count > 0
+      ? ["## Visual context (from attachments)", mediaSummary, ""]
+      : []),
     "## Related issues",
     relatedLines.length ? relatedLines.join("\n") : "_None_",
     "",

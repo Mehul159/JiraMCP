@@ -164,9 +164,49 @@ JiraFlow's context engine does three things Cursor can't do alone:
 
 1. **Ticket intelligence** — fetches the full Jira ticket including linked issues, subtasks, and comments, converting Jira's ADF format (bullet lists, panels, code blocks, tables, headings) to clean readable text.
 2. **Impact grep** — scans your codebase for files containing keywords from the ticket, running all keywords in parallel and ranking files by keyword-match frequency, so Cursor knows exactly which files are relevant before you open any.
-3. **Adaptive plan** — generates an implementation plan tailored to the issue type (bug vs story vs task), ticket content (migrations, API changes, UI work), and linked issues — not generic boilerplate.
+3. **Media intelligence** — downloads attachments (screenshots, logs, text files) and analyzes them so visible UI labels, error messages, and on-screen state become part of the plan and context — *before* any code is written.
+4. **Adaptive plan** — generates an implementation plan tailored to the issue type (bug vs story vs task), ticket content (migrations, API changes, UI work), and linked issues — not generic boilerplate.
 
 This means Cursor gets a focused, high-signal context pack instead of exploring the codebase blindly.
+
+#### Media intelligence (attachments)
+
+`jira_start_ticket`, `prepare_cursor_context`, `generate_implementation_plan`, and `prepare_test_authoring` can read the ticket's attachments and fold them into the context:
+
+- **Images** (PNG/JPG/GIF/WebP) → analyzed with a vision model into concise, engineer-focused notes (UI elements, verbatim error messages, screen/state).
+- **Text/logs** (`.txt/.log/.csv/.json/.xml/...`) → extracted inline.
+- Other types (PDF, video, office, archives) are listed with a skip reason.
+
+**Opt-in by design.** Media analysis is **OFF by default** because each analyzed image costs vision tokens (~10k–40k extra per ticket). It runs only when:
+
+1. A developer asks for it in natural language — e.g. *"analyse and build with media ABC-123"*, *"start ABC-123 with screenshots"*, *"make the plan using the attachments"*. Cursor maps this wording to `analyze_media: true` on the tool call. Normal prompts (no media words) stay on base Jira context with **zero** extra token cost.
+2. A team turns it on globally via `.jiraflow.yaml` (`media_analysis.enabled: true`) or `MEDIA_ANALYSIS_ENABLED=true`.
+
+> Having a `VISION_API_KEY` set does **not** auto-enable analysis — it only makes analysis *possible* when requested.
+
+Configure the vision backend with env vars:
+
+| Var | Default | Purpose |
+|-----|---------|---------|
+| `VISION_API_KEY` / `OPENAI_API_KEY` | — | API key for the vision model (required for image analysis) |
+| `VISION_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible endpoint |
+| `VISION_MODEL` | `gpt-4o-mini` | Vision-capable model |
+| `MEDIA_ANALYSIS_ENABLED` | `false` | Force on/off globally (`true`/`false`) |
+| `MEDIA_MAX_FILES` | `6` | Max attachments analyzed per ticket |
+| `MEDIA_MAX_FILE_BYTES` | `8388608` | Per-file download cap |
+| `MEDIA_MAX_TOTAL_BYTES` | `25165824` | Total download budget per ticket |
+
+Per-repo override in `.jiraflow.yaml` (recommended: keep `enabled: false` and let developers opt in per ticket):
+
+```yaml
+workflow:
+  media_analysis:
+    enabled: false      # OFF by default; per-call "with media" still works
+    mode: images_only   # full | images_only | off
+    max_files: 2
+```
+
+Per-call control: pass `analyze_media: true` to force analysis on, or `false` to force it off, on any of those tools. Media analysis is best-effort — failures never block the workflow.
 
 ### Generating automated test cases from a Jira ticket
 

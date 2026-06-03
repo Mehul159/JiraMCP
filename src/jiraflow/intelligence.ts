@@ -2,12 +2,14 @@ import type { JiraConfig } from "../jira-client.js";
 import { fetchIssueContextBundle } from "../jira/issue-context.js";
 import type { IssueContextBundle, IssueResponse } from "../jira/issue-types.js";
 import { adfToPlainText } from "./adf.js";
+import type { MediaContext } from "./media-context.js";
 
 export type TicketIntelligence = IssueContextBundle & {
   plain_description: string;
   summary: string;
   issue_type: string;
   status: string;
+  media_context?: MediaContext;
 };
 
 export async function buildTicketIntelligence(

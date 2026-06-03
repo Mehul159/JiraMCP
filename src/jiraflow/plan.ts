@@ -13,6 +13,7 @@ export function generateImplementationPlan(opts: {
   const steps = deriveImplementationSteps(intelligence, context);
   const complexity = estimateComplexity(intelligence, context);
   const linked = Object.keys(intelligence.related_issues);
+  const media = intelligence.media_context;
 
   return [
     `# Implementation plan — ${key}`,
@@ -22,6 +23,16 @@ export function generateImplementationPlan(opts: {
     "## Scope",
     intelligence.summary,
     "",
+    ...(media && media.attachment_count > 0
+      ? [
+          "## Attachments / visual context",
+          media.analyzed_count > 0
+            ? media.combined_summary
+            : media.warning ??
+              `${media.attachment_count} attachment(s) present but not analyzed.`,
+          "",
+        ]
+      : []),
     "## Acceptance criteria",
     acceptance.length
       ? acceptance.map((l) => `- ${l}`).join("\n")

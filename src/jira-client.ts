@@ -47,6 +47,66 @@ export async function jiraFetch<T>(
   return text ? (JSON.parse(text) as T) : ({} as T);
 }
 
+export type JiraBinary = {
+  buffer: Buffer;
+  contentType: string;
+  bytes: number;
+};
+
+/**
+ * Download a binary resource (attachment content) from Jira with auth.
+ * Accepts an absolute URL (e.g. attachment.content) or a relative API path.
+ * Enforces a byte cap and timeout so a huge/slow attachment cannot hang or
+ * blow up memory.
+ */
+export async function jiraFetchBinary(
+  cfg: JiraConfig,
+  urlOrPath: string,
+  opts?: { maxBytes?: number; timeoutMs?: number },
+): Promise<JiraBinary> {
+  const maxBytes = opts?.maxBytes ?? 10 * 1024 * 1024;
+  const timeoutMs = opts?.timeoutMs ?? 20_000;
+  const isAbsolute = /^https?:\/\//i.test(urlOrPath);
+  const url = isAbsolute
+    ? urlOrPath
+    : `${normalizeBaseUrl(cfg.baseUrl)}${urlOrPath.startsWith("/") ? urlOrPath : `/${urlOrPath}`}`;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      headers: { Authorization: authHeader(cfg) },
+      redirect: "follow",
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      throw new Error(`Jira attachment ${res.status} for ${url}`);
+    }
+    const declared = Number(res.headers.get("content-length") ?? "0");
+    if (declared && declared > maxBytes) {
+      throw new Error(
+        `Attachment too large (${declared} bytes > ${maxBytes} cap)`,
+      );
+    }
+    const arrayBuf = await res.arrayBuffer();
+    const buffer = Buffer.from(arrayBuf);
+    if (buffer.byteLength > maxBytes) {
+      throw new Error(
+        `Attachment too large (${buffer.byteLength} bytes > ${maxBytes} cap)`,
+      );
+    }
+    return {
+      buffer,
+      contentType:
+        res.headers.get("content-type")?.split(";")[0]?.trim() ||
+        "application/octet-stream",
+      bytes: buffer.byteLength,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function loadJiraConfigFromEnv(): JiraConfig {
   const baseUrl =
     process.env.JIRA_BASE_URL?.trim() ||

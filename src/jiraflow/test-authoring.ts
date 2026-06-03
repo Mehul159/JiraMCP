@@ -63,17 +63,24 @@ export async function buildTestAuthoringPack(opts: {
 
   const acceptance = extractAcceptanceLines(intelligence.plain_description);
   const stepsToReproduce = extractStepsToReproduce(intelligence.plain_description);
+  const mediaSummary = intelligence.media_context?.combined_summary ?? "";
   const keywords = [
     ...keywordsFromText(
       intelligence.summary,
       intelligence.plain_description,
+      mediaSummary,
       ...(opts.focus_areas ?? []),
     ),
     ...(opts.focus_areas ?? []).map((f) => f.toLowerCase()),
   ];
   const uniqueKw = [...new Set(keywords)].slice(0, 15);
   const ticketTokens = new Set(
-    keywordsFromText(intelligence.summary, ...stepsToReproduce, ...acceptance),
+    keywordsFromText(
+      intelligence.summary,
+      ...stepsToReproduce,
+      ...acceptance,
+      mediaSummary,
+    ),
   );
 
   const related = Object.entries(intelligence.related_issues).map(([k, v]) => ({

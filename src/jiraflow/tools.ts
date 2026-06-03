@@ -3,6 +3,7 @@ import * as z from "zod";
 import { jiraFetch, type JiraConfig } from "../jira-client.js";
 import { normalizeIssueKey } from "../jira/issue-context.js";
 import { getRequestDeviceId, getRequestGitCredentials } from "../request-context.js";
+import { extractMediaRefs } from "./adf.js";
 import { checkApproval } from "./approval.js";
 import { auditLog } from "./audit.js";
 import { generateCursorContext } from "./context-engine.js";
@@ -11,7 +12,12 @@ import {
   createFeatureBranch,
   workspaceSetup,
 } from "./git.js";
-import { buildTicketIntelligence } from "./intelligence.js";
+import { buildTicketIntelligence, type TicketIntelligence } from "./intelligence.js";
+import {
+  analyzeTicketMedia,
+  resolveMediaConfig,
+  type MediaAnalysisConfig,
+} from "./media-context.js";
 import { createMergeRequest } from "./mr.js";
 import { generateImplementationPlan } from "./plan.js";
 import { fail, ok, toMcpContent } from "./response.js";
@@ -77,6 +83,44 @@ function getJiraBaseUrl(cfg: JiraConfig): string {
   return cfg.baseUrl;
 }
 
+/**
+ * Best-effort: download + analyze ticket attachments (screenshots, logs) and
+ * attach the result to `intelligence.media_context`. Never throws — media is
+ * additive context and must not block the workflow.
+ */
+async function attachMediaContext(opts: {
+  cfg: JiraConfig;
+  intelligence: TicketIntelligence;
+  repoOverride?: {
+    enabled?: boolean;
+    mode?: "full" | "images_only" | "off";
+    max_files?: number;
+  };
+  analyze_media?: boolean;
+  focusHint?: string;
+}): Promise<MediaAnalysisConfig | null> {
+  const config = resolveMediaConfig(opts.repoOverride);
+  // Explicit override wins; otherwise follow config.
+  const enabled = opts.analyze_media ?? config.enabled;
+  if (!enabled || config.mode === "off") return null;
+  try {
+    const refs = extractMediaRefs(opts.intelligence.issue.fields?.description);
+    opts.intelligence.media_context = await analyzeTicketMedia({
+      cfg: opts.cfg,
+      issue: opts.intelligence.issue,
+      config: { ...config, enabled: true },
+      mediaRefs: refs,
+      focusHint: opts.focusHint ?? opts.intelligence.summary,
+    });
+  } catch (e) {
+    console.error(
+      "[jiraflow] media analysis failed:",
+      e instanceof Error ? e.message : e,
+    );
+  }
+  return config;
+}
+
 function advanceState(
   repoRoot: string,
   ticket: string,
@@ -117,10 +161,23 @@ export function registerJiraflowTools(
           .describe(
             "'full' (default) = plan + context. 'plan_only' = skip context pack. 'context_only' = skip plan. 'minimal' = ticket data only, fastest.",
           ),
+        analyze_media: z
+          .boolean()
+          .optional()
+          .describe(
+            "OFF by default. Set TRUE ONLY when the developer explicitly asks to use media — e.g. 'analyse and build with media PROJ-1', 'start PROJ-1 with screenshots', 'using attachments', 'analyse attached images/pictures'. When unset/false, uses base Jira context only (no vision tokens). Always off in 'minimal' mode.",
+          ),
         ...workspaceInputs,
       }),
     },
-    async ({ ticket_number, dry_run, context_mode, workspace_id, repo_path }) => {
+    async ({
+      ticket_number,
+      dry_run,
+      context_mode,
+      analyze_media,
+      workspace_id,
+      repo_path,
+    }) => {
       const norm = safeNormalizeKey(ticket_number);
       if (!norm.ok) return norm.result;
       const ticket = norm.key;
@@ -129,6 +186,18 @@ export function registerJiraflowTools(
       try {
         const intelligence = await buildTicketIntelligence(cfg, ticket);
         const ws = resolveWorkspace({ workspace_id, repo_path });
+
+        // Visual context first so it feeds plan + context generation.
+        if (mode !== "minimal") {
+          await attachMediaContext({
+            cfg,
+            intelligence,
+            repoOverride:
+              "error" in ws ? undefined : ws.ok.config.workflow.media_analysis,
+            analyze_media,
+          });
+        }
+
         let context_pack: string | undefined;
         let context_files: string[] = [];
         let context_keywords: string[] = [];
@@ -243,10 +312,16 @@ export function registerJiraflowTools(
       inputSchema: z.object({
         ticket_number: z.string(),
         focus_areas: z.array(z.string()).optional(),
+        analyze_media: z
+          .boolean()
+          .optional()
+          .describe(
+            "OFF by default. Set TRUE ONLY when the developer explicitly asks to use media — e.g. 'with media', 'with screenshots', 'using attachments', 'analyse attached images/pictures'. When unset/false, uses base Jira context only (no vision tokens).",
+          ),
         ...workspaceInputs,
       }),
     },
-    async ({ ticket_number, focus_areas, workspace_id, repo_path }) => {
+    async ({ ticket_number, focus_areas, analyze_media, workspace_id, repo_path }) => {
       const norm = safeNormalizeKey(ticket_number);
       if (!norm.ok) return norm.result;
       const ticket = norm.key;
@@ -255,6 +330,14 @@ export function registerJiraflowTools(
         const intelligence = await buildTicketIntelligence(cfg, ticket);
         const ws = resolveWorkspace({ workspace_id, repo_path });
         const repoRoot = "error" in ws ? undefined : ws.ok.repoRoot;
+        await attachMediaContext({
+          cfg,
+          intelligence,
+          repoOverride:
+            "error" in ws ? undefined : ws.ok.config.workflow.media_analysis,
+          analyze_media,
+          focusHint: focus_areas?.join(", "),
+        });
         const pack = await generateCursorContext({
           intelligence,
           repoRoot,
@@ -285,16 +368,30 @@ export function registerJiraflowTools(
         "Create a structured implementation plan before any coding. Use when developer says 'make a plan', 'break down the ticket', 'how should I approach X', 'what are the steps'. Returns step-by-step plan with acceptance criteria, test strategy, and risks. ALWAYS present this to the developer and get approval before implementation.",
       inputSchema: z.object({
         ticket_number: z.string(),
+        analyze_media: z
+          .boolean()
+          .optional()
+          .describe(
+            "OFF by default. Set TRUE ONLY when the developer explicitly asks to use media — e.g. 'with media', 'with screenshots', 'using attachments', 'analyse attached images/pictures'. When unset/false, uses base Jira context only (no vision tokens).",
+          ),
         ...workspaceInputs,
       }),
     },
-    async ({ ticket_number, workspace_id, repo_path }) => {
+    async ({ ticket_number, analyze_media, workspace_id, repo_path }) => {
       const norm = safeNormalizeKey(ticket_number);
       if (!norm.ok) return norm.result;
       const ticket = norm.key;
       try {
-        const intelligence = await buildTicketIntelligence(getCfg(), ticket);
+        const cfg = getCfg();
+        const intelligence = await buildTicketIntelligence(cfg, ticket);
         const ws = resolveWorkspace({ workspace_id, repo_path });
+        await attachMediaContext({
+          cfg,
+          intelligence,
+          repoOverride:
+            "error" in ws ? undefined : ws.ok.config.workflow.media_analysis,
+          analyze_media,
+        });
         let context;
         if (!("error" in ws)) {
           context = await generateCursorContext({
@@ -830,10 +927,23 @@ export function registerJiraflowTools(
           .boolean()
           .optional()
           .describe("Write the knowledge-base markdown to .jiraflow/kb/<KEY>.md (default true)."),
+        analyze_media: z
+          .boolean()
+          .optional()
+          .describe(
+            "OFF by default. Set TRUE ONLY when the developer explicitly asks to use media — e.g. 'write tests with media', 'using the screenshots', 'analyse attached images'. Enriches scenarios/locators with visible UI labels and errors. When unset/false, uses base Jira context only (no vision tokens).",
+          ),
         ...workspaceInputs,
       }),
     },
-    async ({ ticket_number, focus_areas, persist_kb, workspace_id, repo_path }) => {
+    async ({
+      ticket_number,
+      focus_areas,
+      persist_kb,
+      analyze_media,
+      workspace_id,
+      repo_path,
+    }) => {
       const norm = safeNormalizeKey(ticket_number);
       if (!norm.ok) return norm.result;
       const ticket = norm.key;
@@ -844,6 +954,14 @@ export function registerJiraflowTools(
 
       try {
         const intelligence = await buildTicketIntelligence(cfg, ticket);
+        await attachMediaContext({
+          cfg,
+          intelligence,
+          repoOverride:
+            "error" in ws ? undefined : ws.ok.config.workflow.media_analysis,
+          analyze_media,
+          focusHint: focus_areas?.join(", "),
+        });
         const pack = await buildTestAuthoringPack({
           intelligence,
           repoRoot,

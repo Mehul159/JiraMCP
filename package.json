@@ -9,7 +9,7 @@
     "start:http": "node dist/http-server.js",
     "dev": "tsx src/index.ts",
     "dev:http": "tsx src/http-server.ts",
-    "test": "tsx --test src/jiraflow/*.test.ts"
+    "test": "node scripts/test.mjs"
   },
   "keywords": [
     "mcp",

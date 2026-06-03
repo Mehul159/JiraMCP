@@ -16,3 +16,14 @@ workflow:
   validate_scripts:
     - npm run build
     - npm test
+  # Analyze ticket attachments (screenshots/logs) into plan + context.
+  # OPT-IN: media analysis costs vision tokens, so it is OFF by default.
+  # Leave enabled: false to keep per-ticket cost = base Jira context only.
+  # Even when false, a developer can still request it per-call with natural
+  # language ("analyse and build with media ABC-123"), which sets analyze_media=true.
+  # Set enabled: true here only if your team wants media analysed on EVERY ticket.
+  # Requires VISION_API_KEY / OPENAI_API_KEY on the server for image analysis.
+  media_analysis:
+    enabled: false
+    mode: images_only # full | images_only | off
+    max_files: 2
