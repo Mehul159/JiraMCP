@@ -22,6 +22,7 @@ import { createMergeRequest } from "./mr.js";
 import { generateImplementationPlan } from "./plan.js";
 import { fail, ok, toMcpContent } from "./response.js";
 import { buildTestAuthoringPack } from "./test-authoring.js";
+import { buildAutomationReview } from "./validate-authoring.js";
 import {
   assertTransition,
   initState,
@@ -1001,6 +1002,79 @@ export function registerJiraflowTools(
               "Verify the Jira key exists and credentials are valid.",
               "Pass repo_path (stdio) or workspace_id (hosted) to enable repo mining.",
             ],
+          }),
+        );
+      }
+    },
+  );
+
+  server.registerTool(
+    "validate_generated_automation",
+    {
+      description:
+        "Objectively review generated/edited test-automation files against the repo BEFORE presenting them. Run this after writing Gherkin + step/page-object/locator code (say 'validate my automation', 'run the review gate', 'check the generated tests'). It reads the changed files (auto-detected via git, or pass an explicit list), cross-checks every feature step against real step definitions (catches undefined/invented steps), surfaces newly-introduced selectors for human confirmation (catches fabricated locators), flags locators inside step files, page-object methods missing try/catch, scenarios missing @shouldpass, scenarios with no assertion, leftover [TODO], login keys absent from users.config.json, and assumed-but-not-created data pre-state. Returns a 5-reviewer verdict; it BLOCKS on objective failures. Pass repo_path or workspace_id for the TEST AUTOMATION repo.",
+      inputSchema: z.object({
+        ticket_number: z
+          .string()
+          .optional()
+          .describe("Optional Jira key to scope the review to scenarios tagged with it (e.g. BR-16921)."),
+        files: z
+          .array(z.string())
+          .optional()
+          .describe("Optional explicit list of changed files (relative to repo root). If omitted, derived from git status."),
+        ...workspaceInputs,
+      }),
+    },
+    async ({ ticket_number, files, workspace_id, repo_path }) => {
+      const ws = resolveWorkspace({ workspace_id, repo_path });
+      if ("error" in ws) {
+        return toMcpContent(
+          fail("A test-automation repo is required to validate generated code.", {
+            recovery_steps: [
+              "Pass repo_path (stdio) or workspace_id (hosted) pointing at the automation repo.",
+            ],
+          }),
+        );
+      }
+      const repoRoot = ws.ok.repoRoot;
+      const ticket = ticket_number ? safeNormalizeKey(ticket_number) : null;
+      const ticketKey = ticket && ticket.ok ? ticket.key : undefined;
+
+      try {
+        const review = await buildAutomationReview({ repoRoot, files, ticket: ticketKey });
+        auditLog("validate_generated_automation", {
+          ticket: ticketKey ?? "(unscoped)",
+          repoRoot,
+          passed: String(review.passed),
+          score: review.score,
+          changed: String(review.changed_files.length),
+          device: getRequestDeviceId(),
+        });
+        return toMcpContent(
+          review.passed
+            ? ok(`Automation review PASSED (${review.score}).`, {
+                passed: true,
+                score: review.score,
+                changed_files: review.changed_files,
+                reviewers: review.reviewers,
+                review_markdown: review.markdown,
+              })
+            : fail(`Automation review BLOCKED (${review.score}) — fix the listed items, then re-run.`, {
+                passed: false,
+                score: review.score,
+                changed_files: review.changed_files,
+                reviewers: review.reviewers,
+                review_markdown: review.markdown,
+                recovery_steps: [
+                  "Resolve every blocking item, or add missing steps/locators to Required Inputs and ask the user.",
+                  "Do not present code until this gate is APPROVE on all five reviewers.",
+                ],
+              }),
+        );
+      } catch (e) {
+        return toMcpContent(
+          fail(e instanceof Error ? e.message : String(e), {
+            recovery_steps: ["Ensure repo_path points at a git repo with the generated files."],
           }),
         );
       }

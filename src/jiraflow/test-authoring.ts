@@ -117,6 +117,11 @@ export type TestAuthoringKB = {
   description: string;
   acceptance: string[];
   steps_to_reproduce: string[];
+  // Data/entity pre-state the ticket TEXT depends on (e.g. "companies must have
+  // multiple users set up"). Mined from the ticket itself, not the repo — this
+  // is the prerequisite class most often missed because it is implied, never
+  // written as a step.
+  data_prerequisites: string[];
   related: { key: string; summary: string; status: string }[];
   comments: { author: string; text: string }[];
   keywords: string[];
@@ -130,6 +135,7 @@ export type TestAuthoringPack = {
   locator_files: string[];
   prerequisites: string[];
   feature_skeleton: string;
+  data_prerequisites: string[];
   master_prompt: string;
   master_prompt_path?: string;
   reviewer_gate: string[];
@@ -190,6 +196,18 @@ export async function buildTestAuthoringPack(opts: {
     status: (v.fields?.status as { name?: string })?.name ?? "",
   }));
 
+  // Mine the ticket TEXT for data/entity pre-state requirements (the class of
+  // prerequisite that is implied, never written as a step — e.g. "companies must
+  // have multiple users set up"). This is read straight from Jira so it is caught
+  // even when no similar repo scenario shows the setup.
+  const data_prerequisites = extractTicketPrerequisites({
+    summary: intelligence.summary,
+    description: intelligence.plain_description,
+    acceptance,
+    steps: stepsToReproduce,
+    comments: commentText,
+  });
+
   const kb: TestAuthoringKB = {
     key,
     summary: intelligence.summary,
@@ -198,6 +216,7 @@ export async function buildTestAuthoringPack(opts: {
     description: intelligence.plain_description,
     acceptance,
     steps_to_reproduce: stepsToReproduce,
+    data_prerequisites,
     related,
     comments: commentEntries
       .slice(0, 10)
@@ -265,6 +284,7 @@ export async function buildTestAuthoringPack(opts: {
     steps: stepsToReproduce,
     acceptance,
     prerequisites,
+    dataPrerequisites: data_prerequisites,
     reusableSteps: reusable_steps,
     key,
   });
@@ -277,6 +297,7 @@ export async function buildTestAuthoringPack(opts: {
     reusable_steps,
     locator_files,
     prerequisites,
+    dataPrerequisites: data_prerequisites,
     feature_skeleton,
     masterPrompt: master.text,
     hasRepo: Boolean(repoRoot),
@@ -322,7 +343,11 @@ export async function buildTestAuthoringPack(opts: {
     "Check all five categories:\n" +
     "  • LOGIN/SESSION — which user role/key is required?\n" +
     "  • NAVIGATION — which page must the user be on first? Any menus/tabs to traverse?\n" +
-    "  • DATA/CONFIG PRE-STATE — any record, toggle, template, or setting that must exist first?\n" +
+    "  • DATA/CONFIG PRE-STATE — any record, toggle, template, ENTITY, or setting that must exist first? " +
+    "READ the 'data_prerequisites' array in this pack (mined from the ticket text): it lists entities the " +
+    "ticket DEPENDS ON (e.g. 'companies must have multiple users set up'). These are COMPULSORY. If the repo " +
+    "has no step that creates them, you MUST add creation steps first (reuse existing setup steps) or STOP and ask — " +
+    "never assume the data already exists.\n" +
     "  • SEQUENTIAL DEPENDENCY — is this step N of a multi-step workflow requiring steps 1..N-1 first?\n" +
     "  • FILE/DATA INPUTS — any file upload, dropdown selection, or form fill needed before the main action?\n" +
     "Build the FULL ordered step sequence: [prereq 1] → [prereq 2] → [prereq N] → [main Jira step] → [assertion]. " +
@@ -374,6 +399,7 @@ export async function buildTestAuthoringPack(opts: {
     locator_files,
     prerequisites,
     feature_skeleton,
+    data_prerequisites,
     master_prompt: master.text,
     master_prompt_path: master.path,
     reviewer_gate: REVIEWER_GATE,
@@ -558,10 +584,11 @@ function buildFeatureSkeleton(opts: {
   steps: string[];
   acceptance: string[];
   prerequisites: string[];
+  dataPrerequisites: string[];
   reusableSteps: StepDefinition[];
   key: string;
 }): string {
-  const { summary, steps, acceptance, prerequisites, reusableSteps, key } = opts;
+  const { summary, steps, acceptance, prerequisites, dataPrerequisites, reusableSteps, key } = opts;
   const lines: string[] = [];
 
   lines.push(`# ============================================================`);
@@ -575,6 +602,18 @@ function buildFeatureSkeleton(opts: {
   lines.push(`@${key} @shouldpass`);
   lines.push(`Feature: ${summary || key}`);
   lines.push("");
+
+  // --- data/entity pre-state stated in the ticket (COMPULSORY) ---
+  if (dataPrerequisites.length) {
+    lines.push(`  # !!! COMPULSORY DATA PREREQUISITES (mined from the ticket text) !!!`);
+    lines.push(`  # The scenario below is meaningless unless this data exists FIRST.`);
+    dataPrerequisites.slice(0, 6).forEach((d) => {
+      lines.push(`  #   - ${d}`);
+    });
+    lines.push(`  # Add creation/setup steps for the above BEFORE the main action,`);
+    lines.push(`  # reusing existing setup steps — or STOP and ask the user. Do NOT assume it exists.`);
+    lines.push("");
+  }
 
   lines.push(`  @${key} @shouldpass`);
   lines.push(`  Scenario: ${summary || `Verify ${key}`}`);
@@ -657,6 +696,7 @@ function renderMarkdown(opts: {
   reusable_steps: StepDefinition[];
   locator_files: string[];
   prerequisites: string[];
+  dataPrerequisites: string[];
   feature_skeleton: string;
   masterPrompt: string;
   hasRepo: boolean;
@@ -688,6 +728,28 @@ function renderMarkdown(opts: {
   md.push("> **\"Are there any prerequisites? What must already be true before the main action runs?\"**");
   md.push("> (login / session, navigation to the right page, data or template pre-state, prior workflow steps)");
   md.push("");
+
+  // ── Data/entity pre-state mined from the TICKET TEXT — the most-missed class ──
+  if (opts.dataPrerequisites.length) {
+    md.push("### 🚨 COMPULSORY DATA / ENTITY PREREQUISITES (read from the ticket)");
+    md.push("> These are **read directly from the Jira ticket** — entities the ticket DEPENDS ON.");
+    md.push("> The test proves nothing unless this data exists FIRST.");
+    md.push("> Example: a 'select all users vs select one user' bug is untestable unless the company has multiple users.");
+    md.push("");
+    opts.dataPrerequisites.forEach((d, i) => md.push(`${i + 1}. ${d}`));
+    md.push("");
+    md.push("> **For each item above:** find a repo setup step that creates it and run it BEFORE the main action.");
+    md.push("> If no such step exists, CREATE the setup steps first (reusing existing ones) or **STOP and ask the user**.");
+    md.push("> Do NOT write the main scenario assuming this data is already present.");
+    md.push("");
+  } else {
+    md.push("### Data / entity prerequisites (read from the ticket)");
+    md.push("> No explicit data pre-state was auto-detected in the ticket text — **do not assume there is none.**");
+    md.push("> Re-read the description: does the bug/feature reference entities (users, companies, records, templates)");
+    md.push("> that must already exist for the test to be meaningful? If so, set them up first or ask the user.");
+    md.push("");
+  }
+
   if (opts.prerequisites.length) {
     md.push("**Prerequisite sequence — run these IN ORDER as `Given`/`And` BEFORE the main step:**");
     md.push("");
@@ -983,6 +1045,119 @@ function derivePrerequisitesFromScenarios(scenarios: AutomationScenario[]): stri
     .sort((a, b) => a.firstIdx - b.firstIdx || b.count - a.count)
     .map((e) => e.display)
     .slice(0, 8);
+}
+
+/**
+ * Domain entities that, when a ticket references them as pre-existing, usually
+ * indicate a COMPULSORY data prerequisite (they must be created/exist before the
+ * scenario is meaningful). Kept broad but bounded to avoid noise.
+ */
+const PREREQ_ENTITIES =
+  "users?|company users?|companies|company|clients?|employees?|records?|accounts?|roles?|groups?|templates?|report packs?|payslips?|reports?";
+
+/**
+ * Explicit precondition phrases. When a sentence contains one of these AND a
+ * domain entity, it is almost certainly stating a setup requirement.
+ */
+const PREREQ_PHRASES =
+  /\b(pre[\s-]?requisite|pre[\s-]?condition|precondition|prerequisite|must (?:already )?(?:exist|be set up|be configured|have)|should (?:already )?(?:exist|be set up)|needs? to (?:exist|be set up|be created)|set ?up under|configured with|assuming|given that|provided that|requires?|ensure (?:that )?)\b/i;
+
+/**
+ * Quantity/existence signal next to an entity — e.g. "all users set up under the
+ * selected companies", "multiple company users", "every user under the company".
+ * This is the class of prerequisite that is IMPLIED, never written as a step,
+ * and is the one most commonly missed.
+ */
+const PREREQ_EXISTENCE = new RegExp(
+  `\\b(all|every|each|multiple|several|various|both|two|more than one|number of)\\s+(?:\\w+\\s+){0,2}(${PREREQ_ENTITIES})\\b`,
+  "i",
+);
+const PREREQ_ENTITY_STATE = new RegExp(
+  `\\b(${PREREQ_ENTITIES})\\s+(?:are|is|were|have been|that are|that have been)?\\s*(set ?up|configured|created|that exist|existing|already (?:set ?up|created|configured))\\b`,
+  "i",
+);
+
+/**
+ * Read the ticket TEXT (summary + description + acceptance + steps + comments)
+ * and surface data/entity pre-state the scenario depends on. This is the
+ * prerequisite class the repo-scenario miner cannot see, because it is implied
+ * by the prose, not present as a Gherkin step in similar scenarios.
+ *
+ * Returns short, actionable instructions (with the quoted evidence) so the agent
+ * cannot wave it away — e.g. it forces the "create company users first" step.
+ */
+function extractTicketPrerequisites(opts: {
+  summary: string;
+  description: string;
+  acceptance: string[];
+  steps: string[];
+  comments: string;
+}): string[] {
+  const blob = [
+    opts.summary,
+    opts.description,
+    opts.acceptance.join(". "),
+    opts.steps.join(". "),
+    opts.comments,
+  ]
+    .filter(Boolean)
+    .join(". ");
+  if (!blob.trim()) return [];
+
+  const sentences = splitSentences(blob);
+  const out: { norm: string; line: string }[] = [];
+  const seen = new Set<string>();
+
+  for (const raw of sentences) {
+    const s = raw.replace(/\s+/g, " ").trim();
+    if (s.length < 8 || s.length > 400) continue;
+
+    const explicit = PREREQ_PHRASES.test(s);
+    const existMatch = PREREQ_EXISTENCE.exec(s);
+    const stateMatch = PREREQ_ENTITY_STATE.exec(s);
+    const existence = existMatch || stateMatch;
+    if (!explicit && !existence) continue;
+
+    // Identify the entity the requirement is about (for the instruction). Prefer
+    // the entity the quantity/state signal attaches to (e.g. "all USERS"), so the
+    // instruction names the right thing and duplicates collapse cleanly.
+    const entityRaw =
+      existMatch?.[2] ??
+      stateMatch?.[1] ??
+      new RegExp(`\\b(${PREREQ_ENTITIES})\\b`, "i").exec(s)?.[1];
+    if (!entityRaw) continue; // a precondition with no entity is too vague to action
+    const entity = entityRaw.toLowerCase().replace(/s$/, "");
+
+    const evidence = truncateSentence(s, 180);
+    const line = explicit
+      ? `Stated precondition — ensure it holds before the scenario: "${evidence}"`
+      : `Data pre-state — the scenario depends on **${entity}${entity.endsWith("y") ? "/ies" : "s"}** that must already exist. ` +
+        `Create/set them up first (reuse existing setup steps) or STOP and ask. Evidence: "${evidence}"`;
+
+    const norm = `${entity}|${explicit ? "x" : "e"}`;
+    if (seen.has(norm)) continue;
+    seen.add(norm);
+    out.push({ norm, line });
+    if (out.length >= 6) break;
+  }
+
+  return out.map((o) => o.line);
+}
+
+/** Lightweight sentence splitter for prose mined from Jira/ADF. */
+function splitSentences(text: string): string[] {
+  return text
+    .split(/(?<=[.!?:])\s+|\n+|•|·|\u2022/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** Trim a sentence to a max length on a word boundary. */
+function truncateSentence(s: string, max: number): string {
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max);
+  const lastSpace = cut.lastIndexOf(" ");
+  return (lastSpace > 40 ? cut.slice(0, lastSpace) : cut) + "…";
 }
 
 function capitalize(s: string): string {
