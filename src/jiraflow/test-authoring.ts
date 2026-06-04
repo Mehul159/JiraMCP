@@ -16,6 +16,86 @@ const MAX_FEATURE_FILES_READ = 15;
 const MAX_STEP_FILES_READ = 20;
 const MAX_FILE_BYTES = 96 * 1024;
 
+// Master automation prompt — the single source of truth for priorities and the
+// framework conventions. Authored as a real .md file (prompts/automation-master-
+// prompt.md) so it is editable without touching code, then loaded here and
+// embedded into every authoring pack. An embedded fallback guarantees the
+// system never breaks if the file is missing (reliability over cleverness).
+const MASTER_PROMPT_RELATIVE = "prompts/automation-master-prompt.md";
+
+let masterPromptCache: { text: string; path?: string } | null = null;
+
+async function loadMasterPrompt(): Promise<{ text: string; path?: string }> {
+  if (masterPromptCache) return masterPromptCache;
+  // Resolve against the compiled module (dist/jiraflow → repo root) and the dev
+  // module (src/jiraflow → repo root), plus the process cwd as a final attempt.
+  const candidates = [
+    join(__dirname, "..", "..", MASTER_PROMPT_RELATIVE),
+    join(__dirname, "..", "..", "..", MASTER_PROMPT_RELATIVE),
+    join(process.cwd(), MASTER_PROMPT_RELATIVE),
+  ];
+  for (const p of candidates) {
+    const text = await readFileCapped(p);
+    if (text && text.trim().length > 0) {
+      masterPromptCache = { text, path: p };
+      return masterPromptCache;
+    }
+  }
+  masterPromptCache = { text: EMBEDDED_MASTER_PROMPT };
+  return masterPromptCache;
+}
+
+// Condensed, faithful fallback used only when the .md file cannot be read.
+const EMBEDDED_MASTER_PROMPT = [
+  "# MASTER AUTOMATION PROMPT — Jira → Cucumber/WebdriverIO (BrainPayroll)",
+  "",
+  "## THE ONE RULE: Never fabricate. Reuse what exists. If it does not exist, STOP and ASK the user.",
+  "Do not invent step text, page-object methods, or locators (XPath/CSS/ID).",
+  "",
+  "## PRIORITY ORDER (highest → lowest):",
+  "1. PREREQUISITES FIRST — login/session → tax year/context → navigation → data/config pre-state → prior workflow steps → file/dropdown inputs.",
+  "2. READ THE TICKET FULLY — description + acceptance criteria + QA comments + linked issues.",
+  "3. REUSE EXISTING STEPS verbatim (match similar scenarios exactly).",
+  "4. REUSE EXISTING PAGE-OBJECT METHODS & CONFIRMED LOCATORS.",
+  "5. ASK THE USER for anything missing (add to Required Inputs and wait).",
+  "6. GENERATE NEW CODE LAST — only for confirmed reuse or user-supplied wording + locator.",
+  "",
+  "## PREREQUISITE CHECKLIST (answer all before writing Gherkin):",
+  "- LOGIN: `Given User logs into brain payroll with user \"<key>\"` (admin) or `... client portal ...` (client). Key must exist in users.config.json.",
+  "- CONTEXT: tax year via `And User select tax year \"YYYY-YYYY\"` + `And User accepts the confirmation popup`.",
+  "- NAVIGATION: `And User is on <X> page` (sideNavigationPO.navigateToPageFromSideNav(\"Parent-->Child\")).",
+  "- DATA PRE-STATE: company/employee/template/toggle that must already exist (often a prior scenario).",
+  "- SEQUENCE: replicate full ordered sequence from similar scenarios.",
+  "- FILE/INPUT: uploads + sheet selection + form fills before the main action.",
+  "Authoritative sequence: [login] → [context] → [navigation] → [data pre-state] → [inputs] → [MAIN ACTION] → [assertion].",
+  "",
+  "## ARCHITECTURE (do not short-circuit):",
+  "feature → step_definations/slpgl/<area>_steps.ts → pageobjects/SLPGL/<area>/<name>PO.ts → locaters/SLPGL/<area>/<name>_locator.ts",
+  "- Step def: one Page-Object call only; no $()/XPath/browser.* ; assertions via chai assert.",
+  "- Page-object method: this.driver.<util>(this.<locator>.<getter>, ...) wrapped in try/catch throwing 'Exception occured while <X> -->' + err.",
+  "- Locator: getter returning $(\"xpath|css\").",
+  "",
+  "## CONVENTIONS:",
+  "- Tags: `@<JIRA-KEY> @shouldpass @<ReleaseTag>` (@shouldpass mandatory).",
+  "- Params: double-quoted in Gherkin, captured with \"([^\\\"]*)?\" in regex.",
+  "- Waits: `And User waits for \"<ms>\" seconds` — number is milliseconds.",
+  "- Naming: <Name>Locator, <Name>PO classes; camelCase methods (clickX/selectX/enterX/verifyX).",
+  "- Folders: features/, step_definations/slpgl/, pageobjects/SLPGL/<area>/, locaters/SLPGL/<area>/.",
+  "",
+  "## REUSE LADDER (stop at first match): exact → parameterized → compose → extend minimally → BLOCKED (ask user).",
+  "",
+  "## WHEN BLOCKED, ask the user for: (1) exact step wording, (2) locator XPath/CSS/ID, (3) page-object file, (4) page/URL context.",
+  "Asking is success. Fabricating a locator is failure.",
+  "",
+  "## 5-REVIEWER GATE — run BEFORE presenting any result; finish only at 5/5 APPROVE:",
+  "1. Prerequisite & Sequence — all prereqs present and correctly ordered; no assumed app state.",
+  "2. Anti-Fabrication & Reuse — nothing invented; existing steps/methods/locators/user-keys reused, not rewritten.",
+  "3. Framework & Convention — layering exact; no $()/browser.* in steps; PO try/catch; locators are getters; chai asserts; @shouldpass; correct param/wait/naming/folders.",
+  "4. Functional Coverage — acceptance criteria + steps-to-reproduce + expected result covered with a real Then assertion; QA edge cases handled.",
+  "5. Runnability & Quality — no [TODO]; login key exists in users.config.json; selectors resolvable; sensible waits; deterministic; no dead/duplicate steps.",
+  "Any reviewer = REQUEST CHANGES → fix it, or if info is missing add to Required Inputs and ASK the user. Output the verdict block; never present code that is not 5/5.",
+].join("\n");
+
 export type AutomationScenario = {
   file: string;
   name: string;
@@ -50,9 +130,22 @@ export type TestAuthoringPack = {
   locator_files: string[];
   prerequisites: string[];
   feature_skeleton: string;
+  master_prompt: string;
+  master_prompt_path?: string;
+  reviewer_gate: string[];
   kb_path?: string;
   next_action: string;
 };
+
+// The five independent reviewers the result must pass before it is presented.
+// Surfaced programmatically so callers can render/enforce the same gate.
+const REVIEWER_GATE: string[] = [
+  "Prerequisite & Sequence — all prerequisites present and correctly ordered; no assumed app state.",
+  "Anti-Fabrication & Reuse — nothing invented; existing steps/methods/locators/user-keys reused, not rewritten.",
+  "Framework & Convention — layering exact; no $()/browser.* in steps; PO try/catch; locators are getters; chai asserts; @shouldpass; correct param/wait/naming/folders.",
+  "Functional Coverage — acceptance criteria + steps-to-reproduce + expected result covered with a real Then assertion; QA edge cases handled.",
+  "Runnability & Quality — no [TODO]; login key exists in users.config.json; selectors resolvable; sensible waits; deterministic; no dead/duplicate steps.",
+];
 
 export async function buildTestAuthoringPack(opts: {
   intelligence: TicketIntelligence;
@@ -176,6 +269,8 @@ export async function buildTestAuthoringPack(opts: {
     key,
   });
 
+  const master = await loadMasterPrompt();
+
   const markdown = renderMarkdown({
     kb,
     similar_scenarios,
@@ -183,6 +278,7 @@ export async function buildTestAuthoringPack(opts: {
     locator_files,
     prerequisites,
     feature_skeleton,
+    masterPrompt: master.text,
     hasRepo: Boolean(repoRoot),
   });
 
@@ -199,6 +295,19 @@ export async function buildTestAuthoringPack(opts: {
   }
 
   const next_action =
+    " GOVERNED BY THE MASTER AUTOMATION PROMPT — it is embedded at the very top of `markdown` " +
+    "(and also returned as `master_prompt`). Read it FIRST; it defines the priority order, the " +
+    "BrainPayroll framework conventions, the reuse ladder, and the ask-don't-fabricate rule. " +
+    "Everything below is an application of those rules.\n\n" +
+
+    " TOP PRIORITY — PREREQUISITES BEFORE ANYTHING ELSE.\n" +
+    "The #1 cause of broken automation is skipping prerequisite steps " +
+    "(login, navigation, data/template setup, prior workflow steps). " +
+    "FIRST QUESTION, ALWAYS: 'Are there any prerequisites? What must already be true before the main action runs?' " +
+    "The 'prerequisites' array in this pack AND the leading steps of every scenario in 'similar_scenarios' " +
+    "already show the required setup — READ THEM. Place every prerequisite (as Given/And) BEFORE the main Jira " +
+    "step in every scenario. Never skip them. Never assume the app is already in the correct state.\n\n" +
+
     "MANDATORY WORKFLOW — follow every rule below in order before writing any code:\n\n" +
 
     "STEP 1 — JIRA DEEP READ:\n" +
@@ -206,8 +315,9 @@ export async function buildTestAuthoringPack(opts: {
     "Do NOT work from the ticket title alone. Extract: (a) the ONE core action/validation, " +
     "(b) the expected result, (c) the module/page it operates on.\n\n" +
 
-    "STEP 2 — PREREQUISITE ANALYSIS (do this before writing a single Gherkin line):\n" +
-    "Reason backwards from the core task. For each scenario, ask: " +
+    "STEP 2 — PREREQUISITE ANALYSIS (TOPMOST — do this before writing a single Gherkin line):\n" +
+    "Read the LEADING steps of every scenario in similar_scenarios — those leading steps ARE the prerequisites; " +
+    "replicate them. Then reason backwards from the core task and ask: " +
     "'What must already be true before this step can succeed at runtime?' " +
     "Check all five categories:\n" +
     "  • LOGIN/SESSION — which user role/key is required?\n" +
@@ -224,7 +334,7 @@ export async function buildTestAuthoringPack(opts: {
     "  2. PARAMETERIZED REUSE — step exists with hardcoded value → extract as parameter, reuse\n" +
     "  3. COMPOSE FROM EXISTING — combine two existing steps in sequence\n" +
     "  4. EXTEND MINIMALLY — existing step is 90% correct, add smallest possible change\n" +
-    "  5. ⛔ BLOCKED — no match found → DO NOT generate code → add to 'Required Inputs' table → ask user\n\n" +
+    "  5.  BLOCKED — no match found → DO NOT generate code → add to 'Required Inputs' table → ask user\n\n" +
 
     "STEP 4 — LOCATOR VALIDATION:\n" +
     "Only use locators confirmed present in locator_files. " +
@@ -240,9 +350,21 @@ export async function buildTestAuthoringPack(opts: {
     "NEVER generate speculative code. NEVER fabricate XPath, IDs, or step text. " +
     "If in doubt — stop and ask the user. Asking is always correct.\n\n" +
 
+    "STEP 6 — THE 5-REVIEWER GATE (run BEFORE presenting any result; finish only at 5/5 APPROVE):\n" +
+    "Treat your output as a PR facing five independent reviewers. Simulate each, write the verdict, " +
+    "and present code ONLY when all five APPROVE:\n" +
+    "  1. PREREQUISITE & SEQUENCE — all prereqs present and correctly ordered; no assumed app state.\n" +
+    "  2. ANTI-FABRICATION & REUSE — nothing invented; existing steps/methods/locators/user-keys reused, not rewritten.\n" +
+    "  3. FRAMEWORK & CONVENTION — layering exact; no $()/browser.* in steps; PO try/catch; locators are getters; chai asserts; @shouldpass; correct param/wait/naming/folders.\n" +
+    "  4. FUNCTIONAL COVERAGE — acceptance criteria + steps-to-reproduce + expected result covered with a real Then assertion; QA edge cases handled.\n" +
+    "  5. RUNNABILITY & QUALITY — no [TODO]; login key exists in users.config.json; selectors resolvable; sensible waits; deterministic; no dead/duplicate steps.\n" +
+    "Any reviewer = REQUEST CHANGES → fix it, or if information is missing add it to 'Required Inputs' and ASK the user, then re-run the gate. " +
+    "Output the verdict block (1..5 with APPROVE/REQUEST CHANGES and a PASSED x/5 line). Never present code that is not 5/5.\n\n" +
+
     "Finalize feature_skeleton into a .feature file following the repo's existing structure. " +
     "Place files alongside similar_scenarios. " +
-    "Include all prerequisite steps before the main Jira step in every scenario.";
+    "Include all prerequisite steps before the main Jira step in every scenario. " +
+    "Do not present the final result until the 5-reviewer gate passes 5/5.";
 
   return {
     markdown,
@@ -252,6 +374,9 @@ export async function buildTestAuthoringPack(opts: {
     locator_files,
     prerequisites,
     feature_skeleton,
+    master_prompt: master.text,
+    master_prompt_path: master.path,
+    reviewer_gate: REVIEWER_GATE,
     kb_path,
     next_action,
   };
@@ -533,12 +658,66 @@ function renderMarkdown(opts: {
   locator_files: string[];
   prerequisites: string[];
   feature_skeleton: string;
+  masterPrompt: string;
   hasRepo: boolean;
 }): string {
   const { kb } = opts;
   const md: string[] = [];
   md.push(`# Test authoring pack — ${kb.key}`);
   md.push("");
+
+  // ── MASTER PROMPT: the authoritative rules, embedded so they are always seen ─
+  md.push("> **Read the master automation rules below before doing anything.**");
+  md.push("> They define the priority order, framework conventions, reuse ladder,");
+  md.push("> and the ask-don't-fabricate rule. The rest of this pack applies them to this ticket.");
+  md.push("");
+  md.push("<details open>");
+  md.push("<summary> MASTER AUTOMATION RULES (authoritative — click to collapse)</summary>");
+  md.push("");
+  md.push(opts.masterPrompt.trim());
+  md.push("");
+  md.push("</details>");
+  md.push("");
+  md.push("---");
+  md.push("");
+
+  // ── TOP PRIORITY: prerequisites first, before anything else ───────────────
+  md.push("##  STEP 0 — PREREQUISITES FIRST (highest priority, do not skip)");
+  md.push("> The #1 cause of broken automation is skipping setup steps.");
+  md.push("> Before automating the main task, ANSWER THIS QUESTION:");
+  md.push("> **\"Are there any prerequisites? What must already be true before the main action runs?\"**");
+  md.push("> (login / session, navigation to the right page, data or template pre-state, prior workflow steps)");
+  md.push("");
+  if (opts.prerequisites.length) {
+    md.push("**Prerequisite sequence — run these IN ORDER as `Given`/`And` BEFORE the main step:**");
+    md.push("");
+    opts.prerequisites.forEach((p, i) => md.push(`${i + 1}. ${stripLeadingKeyword(p)}`));
+    md.push("");
+    const topSc = opts.similar_scenarios[0];
+    if (topSc) {
+      const lead = leadingPrerequisiteSteps(topSc.steps);
+      if (lead.length) {
+        md.push(
+          `> These are the leading steps of the closest matching scenario ` +
+            `\`${topSc.name}\` (\`${topSc.file}\`) — replicate this exact setup.`,
+        );
+      }
+    }
+    md.push("> Reuse each verbatim from **Reusable step definitions** below.");
+    md.push("> If a prerequisite step is missing, ASK the user — never skip it, never assume the app is already set up.");
+  } else {
+    md.push(">  **No prerequisites auto-detected. You MUST still check manually — do not assume there are none.**");
+    md.push("> Reason through every category and confirm against the related scenarios below:");
+    md.push("> 1. **LOGIN/SESSION** — which user role/key must be logged in first?");
+    md.push("> 2. **NAVIGATION** — which page/menu must be open before the main step?");
+    md.push("> 3. **DATA/CONFIG PRE-STATE** — any record, toggle, or template needed first?");
+    md.push("> 4. **SEQUENTIAL DEPENDENCY** — is this step N of a workflow requiring steps 1..N-1?");
+    md.push("> 5. **FILE/DATA INPUTS** — any upload, dropdown, or form fill needed before the main action?");
+    md.push("> Read the leading steps of every scenario under **Similar existing scenarios** — those leading steps ARE the prerequisites.");
+    md.push("> If a prerequisite is missing from Reusable step definitions, add it to **Required Inputs** and ask the user.");
+  }
+  md.push("");
+
   md.push("## Knowledge base");
   md.push(`- **Summary:** ${kb.summary}`);
   md.push(`- **Type:** ${kb.issue_type}`);
@@ -574,42 +753,26 @@ function renderMarkdown(opts: {
   );
   md.push("");
 
-  // ── Prerequisite / background steps ──────────────────────────────────────
-  md.push("## Prerequisite / setup steps (mined from repo)");
-  if (opts.prerequisites.length) {
-    md.push("> Found in existing Background blocks and recurring inline Given setup steps.");
-    md.push("> Include them (as Given) before the main Jira step. Reuse verbatim — do not paraphrase.");
-    md.push(opts.prerequisites.map((p) => `- ${p}`).join("\n"));
-  } else {
-    md.push("> ⚠️ **No prerequisite steps were mined from the repo.**");
-    md.push(">");
-    md.push("> Before writing any Gherkin, manually reason through these categories:");
-    md.push("> 1. **LOGIN/SESSION** — which user role/key is needed?");
-    md.push("> 2. **NAVIGATION** — which page must be active before the main step?");
-    md.push("> 3. **DATA/CONFIG PRE-STATE** — any record, toggle, or template needed first?");
-    md.push("> 4. **SEQUENTIAL DEPENDENCY** — is this step N of a workflow requiring steps 1..N-1?");
-    md.push("> 5. **FILE/DATA INPUTS** — any upload, dropdown, or form fill needed before the main action?");
-    md.push(">");
-    md.push("> Search `Reusable step definitions` below for each prerequisite.");
-    md.push("> If not found, add it to **Required Inputs** and ask the user before generating code.");
-  }
-  md.push("");
-
   // ── Similar existing scenarios ────────────────────────────────────────────
-  md.push("## Similar existing scenarios (reuse these verbatim where possible)");
+  md.push("## Similar existing scenarios (read leading steps for prerequisites)");
   if (opts.similar_scenarios.length) {
     md.push("> Use these scenarios as structural and wording templates.");
     md.push("> Match their step wording exactly — do not paraphrase.");
+    md.push("> **The LEADING steps of each scenario are the prerequisites — replicate them first.**");
     for (const sc of opts.similar_scenarios) {
+      const lead = leadingPrerequisiteSteps(sc.steps);
       md.push(`### \`${sc.file}\` — ${sc.name} (match score: ${sc.score})`);
+      if (lead.length) {
+        md.push(`_Prerequisite (leading) steps: ${lead.map((s) => stripLeadingKeyword(s)).join(" → ")}_`);
+      }
       md.push("```gherkin");
       md.push(...sc.steps);
       md.push("```");
     }
   } else {
     md.push(opts.hasRepo
-      ? "> ⚠️ No closely matching scenarios found in repo. All steps will need reuse analysis against step definitions below."
-      : "> ⚠️ Provide `repo_path` or `workspace_id` to mine existing tests for reuse.");
+      ? ">  No closely matching scenarios found in repo. All steps will need reuse analysis against step definitions below."
+      : ">  Provide `repo_path` or `workspace_id` to mine existing tests for reuse.");
   }
   md.push("");
 
@@ -620,14 +783,14 @@ function renderMarkdown(opts: {
   md.push("> 2. Parameterized match → extract value as parameter");
   md.push("> 3. Compose from two existing steps");
   md.push("> 4. Extend existing step minimally");
-  md.push("> 5. ⛔ No match → add to Required Inputs below → ask user → wait for confirmation");
+  md.push("> 5.  No match → add to Required Inputs below → ask user → wait for confirmation");
   md.push("");
   if (opts.reusable_steps.length) {
     for (const s of opts.reusable_steps) {
       md.push(`- \`${s.keyword}\` \`${s.pattern}\`  _→ \`${s.file}\`_`);
     }
   } else {
-    md.push("> ⚠️ No reusable steps found. Provide `repo_path`/`workspace_id` to mine the framework.");
+    md.push(">  No reusable steps found. Provide `repo_path`/`workspace_id` to mine the framework.");
     md.push("> Until steps are confirmed, all new steps require user input before any code is generated.");
   }
   md.push("");
@@ -639,12 +802,12 @@ function renderMarkdown(opts: {
   md.push(
     opts.locator_files.length
       ? opts.locator_files.map((f) => `- \`${f}\``).join("\n")
-      : "> ⚠️ No locator files found. Provide `repo_path`/`workspace_id` or ask user for locators.",
+      : ">  No locator files found. Provide `repo_path`/`workspace_id` or ask user for locators.",
   );
   md.push("");
 
   // ── Required Inputs — blocked gaps ───────────────────────────────────────
-  md.push("## ⛔ Required Inputs — BLOCKED (user confirmation needed before code generation)");
+  md.push("##  Required Inputs — BLOCKED (user confirmation needed before code generation)");
   md.push("> Add every step or locator not found in the repo to this table.");
   md.push("> Do NOT generate step definitions, page methods, or locators for these rows.");
   md.push("> Ask the user to provide the information below, then generate code only after confirmation.");
@@ -667,6 +830,32 @@ function renderMarkdown(opts: {
   md.push("> Do NOT remove the comment headers — they are navigation guides.");
   md.push("```gherkin");
   md.push(opts.feature_skeleton);
+  md.push("```");
+
+  // ── 5-Reviewer gate — final quality gate before presenting any result ──────
+  md.push("");
+  md.push("## 👥 FINAL GATE — pass all 5 reviewers before presenting (do not skip)");
+  md.push("> Treat the result as a PR facing five independent reviewers. Simulate each, write the");
+  md.push("> verdict, and present code **only at 5/5 APPROVE**. Any REQUEST CHANGES → fix it, or if");
+  md.push("> info is missing add it to **Required Inputs** and ask the user, then re-run the gate.");
+  md.push("");
+  md.push("| # | Reviewer | REQUEST CHANGES if… |");
+  md.push("|---|----------|----------------------|");
+  md.push("| 1 | Prerequisite & Sequence | any prereq missing/misordered, or app state assumed |");
+  md.push("| 2 | Anti-Fabrication & Reuse | any invented/unconfirmed step, method, locator, or user key; existing steps rewritten |");
+  md.push("| 3 | Framework & Convention | `$()`/`browser.*` in steps; PO not try/catch; locator not a getter; no chai assert; missing `@shouldpass`; wrong param/wait/naming/folder |");
+  md.push("| 4 | Functional Coverage | acceptance criteria / steps-to-reproduce / expected result not covered; no real `Then` assertion |");
+  md.push("| 5 | Runnability & Quality | any `[TODO]`; login key not in `users.config.json`; unresolved selector; bad waits; non-deterministic; dead/duplicate steps |");
+  md.push("");
+  md.push("Output the verdict block, e.g.:");
+  md.push("```");
+  md.push("REVIEW GATE");
+  md.push(" 1. Prerequisite & Sequence ........ APPROVE");
+  md.push(" 2. Anti-Fabrication & Reuse ....... APPROVE");
+  md.push(" 3. Framework & Convention ......... APPROVE");
+  md.push(" 4. Functional Coverage ............ APPROVE");
+  md.push(" 5. Runnability & Quality .......... APPROVE");
+  md.push(" → PASSED (5/5). Safe to present.");
   md.push("```");
 
   return md.join("\n");
@@ -744,25 +933,54 @@ function isPrerequisiteStep(text: string): boolean {
 }
 
 /**
- * Derive prerequisite candidates from the inline setup steps that recur across
- * similar scenarios. Frequency-ranked so the most common setup (login, then
- * navigation) surfaces first. Matches frameworks that use inline Given steps
- * instead of a Background block.
+ * Extract the leading "setup" steps from a single scenario — the prerequisite
+ * sequence that runs BEFORE the main action. These are the maximal prefix of
+ * steps that are either Given steps or match prerequisite patterns
+ * (login/navigation/selection). Stops at the first real action (When that is
+ * not navigation) or the first assertion (Then). This catches domain-specific
+ * setup steps even when they do not match the keyword patterns, because they
+ * still appear as leading Given steps.
+ */
+function leadingPrerequisiteSteps(steps: string[]): string[] {
+  const out: string[] = [];
+  for (const step of steps) {
+    const kw = (step.match(/^(Given|When|Then|And|But)\b/i)?.[1] ?? "").toLowerCase();
+    const body = stripLeadingKeyword(step);
+    if (kw === "then" || kw === "but") break; // reached assertions / negative path
+    if (kw === "given" || isPrerequisiteStep(body)) {
+      out.push(step);
+      continue;
+    }
+    break; // first non-setup action ends the prerequisite block
+  }
+  return out;
+}
+
+/**
+ * Derive the prerequisite sequence by reading the LEADING steps of every
+ * similar scenario. Ranked by position first (so login → navigation → selection
+ * keeps its natural order) then by how many scenarios share the step (a real
+ * prerequisite recurs; a one-off main action does not). This is the primary
+ * signal — it surfaces prerequisites the keyword patterns alone would miss.
  */
 function derivePrerequisitesFromScenarios(scenarios: AutomationScenario[]): string[] {
-  const tally = new Map<string, { display: string; count: number }>();
+  const tally = new Map<string, { display: string; count: number; firstIdx: number }>();
   for (const sc of scenarios) {
-    for (const step of sc.steps) {
-      const body = stripLeadingKeyword(step);
-      if (!body || !isPrerequisiteStep(body)) continue;
-      const norm = body.toLowerCase();
+    const leading = leadingPrerequisiteSteps(sc.steps);
+    leading.forEach((step, idx) => {
+      const norm = stripLeadingKeyword(step).toLowerCase();
+      if (!norm) return;
       const entry = tally.get(norm);
-      if (entry) entry.count += 1;
-      else tally.set(norm, { display: step, count: 1 });
-    }
+      if (entry) {
+        entry.count += 1;
+        entry.firstIdx = Math.min(entry.firstIdx, idx);
+      } else {
+        tally.set(norm, { display: step, count: 1, firstIdx: idx });
+      }
+    });
   }
   return [...tally.values()]
-    .sort((a, b) => b.count - a.count)
+    .sort((a, b) => a.firstIdx - b.firstIdx || b.count - a.count)
     .map((e) => e.display)
     .slice(0, 8);
 }
