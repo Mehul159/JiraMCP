@@ -284,7 +284,7 @@ export async function buildTestAuthoringPack(opts: {
     // (login, navigation, data pre-state). Many frameworks use inline Givens
     // instead of Background, so mining backgrounds alone misses prerequisites.
     const inlinePrereqs = derivePrerequisitesFromScenarios(scenarios);
-    prerequisites = dedupe([...backgrounds, ...inlinePrereqs]).slice(0, 12);
+    prerequisites = sanitizeStepSequence(dedupe([...backgrounds, ...inlinePrereqs])).slice(0, 12);
 
     // Step-definition mining — mine once, then assemble in priority order.
     const stepCandidates = dedupe([
@@ -390,7 +390,9 @@ export async function buildTestAuthoringPack(opts: {
     "'What must already be true before this step can succeed at runtime?' " +
     "Check all five categories:\n" +
     "  • LOGIN/SESSION — which user role/key is required?\n" +
-    "  • NAVIGATION — which page must the user be on first? Any menus/tabs to traverse?\n" +
+    "  • NAVIGATION — which page must the user be on first? Any menus/tabs to traverse? " +
+    "FIREWALL: login already lands on the Company List page — do NOT add 'User is on Company List page' " +
+    "immediately after login; it is redundant and breaks the run. Never emit a login step twice.\n" +
     "  • DATA/CONFIG PRE-STATE — any record, toggle, template, ENTITY, or setting that must exist first? " +
     "READ the 'data_prerequisites' array in this pack (mined from the ticket text): it lists entities the " +
     "ticket DEPENDS ON (e.g. 'companies must have multiple users set up'). These are COMPULSORY. If the repo " +
@@ -1339,17 +1341,20 @@ function buildScenarioTemplate(
 ): ScenarioTemplate | null {
   if (!similar.length) return null;
   const base = similar[0];
-  const baseSteps = base.steps;
+  const baseSteps = sanitizeStepSequence(base.steps);
   if (baseSteps.length < 3) return null; // too short to have a real envelope
 
-  const siblings = similar.slice(1, 4).filter((s) => s.steps.length >= 2);
+  const siblings = similar
+    .slice(1, 4)
+    .map((s) => sanitizeStepSequence(s.steps))
+    .filter((steps) => steps.length >= 2);
   let prefixLen = 0;
   let suffixLen = 0;
   const derived_from_siblings = siblings.length > 0;
 
   if (derived_from_siblings) {
-    prefixLen = Math.min(...siblings.map((s) => commonPrefixLen(baseSteps, s.steps)));
-    suffixLen = Math.min(...siblings.map((s) => commonSuffixLen(baseSteps, s.steps)));
+    prefixLen = Math.min(...siblings.map((steps) => commonPrefixLen(baseSteps, steps)));
+    suffixLen = Math.min(...siblings.map((steps) => commonSuffixLen(baseSteps, steps)));
   } else {
     prefixLen = countLeadingEnvelope(baseSteps);
     suffixLen = countTrailingEnvelope(baseSteps);
@@ -1376,6 +1381,33 @@ function buildScenarioTemplate(
     postlude,
     derived_from_siblings,
   };
+}
+
+// ── Step-sequence firewall ──────────────────────────────────────────────────
+// Project rule: after the login step the user ALREADY lands on the Company List
+// page, so an explicit "User is on Company List page" right after login is
+// redundant and breaks the run. Also collapses consecutive duplicate steps
+// (e.g. a doubled login line). Applied to everything the pack emits as steps.
+function sanitizeStepSequence(steps: string[]): string[] {
+  const out: string[] = [];
+  for (const step of steps) {
+    const prev = out[out.length - 1];
+    // Drop an exact consecutive duplicate (values blanked) — e.g. doubled login.
+    if (prev && normStepForCompare(prev) === normStepForCompare(step)) continue;
+    // Drop the redundant Company-List landing immediately after login.
+    if (prev && isLoginStep(prev) && isCompanyListLanding(step)) continue;
+    out.push(step);
+  }
+  return out;
+}
+
+function isLoginStep(step: string): boolean {
+  return /\blog(s|ged)?\s+in(to)?\b/i.test(stripLeadingKeyword(step));
+}
+
+function isCompanyListLanding(step: string): boolean {
+  const s = stripLeadingKeyword(step).toLowerCase();
+  return /\bis on\b.*\bcompany list\b.*\bpage\b/.test(s);
 }
 
 /** Normalize a step for envelope comparison: drop keyword, blank quoted values. */

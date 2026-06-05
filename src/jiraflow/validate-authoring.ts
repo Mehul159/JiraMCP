@@ -148,6 +148,23 @@ function reviewPrerequisites(scenarios: FeatureScenario[]): ReviewerResult {
       advisories.push(`"${sc.name}" — no login/session step found; confirm a Background provides it.`);
     }
 
+    // Firewall: login already lands on the Company List page, so an explicit
+    // "User is on Company List page" right after login (or a doubled login) is
+    // redundant and breaks the run.
+    for (let i = 0; i < bodies.length; i++) {
+      const cur = bodies[i].toLowerCase();
+      const prev = i > 0 ? bodies[i - 1].toLowerCase() : "";
+      const prevIsLogin = /\blog(s|ged)?\s+in(to)?\b/.test(prev);
+      if (prevIsLogin && /\bis on\b.*\bcompany list\b.*\bpage\b/.test(cur)) {
+        advisories.push(
+          `"${sc.name}" — "${bodies[i]}" follows login, but login already lands on the Company List page. Remove this redundant step; it breaks the run.`,
+        );
+      }
+      if (prevIsLogin && /\blog(s|ged)?\s+in(to)?\b/.test(cur)) {
+        advisories.push(`"${sc.name}" — duplicated login step at line ${sc.steps[i].line}. Keep a single login.`);
+      }
+    }
+
     // Data pre-state heuristic: entities referenced by name should be created in
     // the test (or a tagged setup) — not assumed to pre-exist.
     const companies = uniqueMatches(joined, /company\s+"([^"]+)"/gi);
