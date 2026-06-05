@@ -22,6 +22,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { buildStepFamilies, findFamilyForStep, familyKey } from "./confusable-steps.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -231,6 +232,32 @@ async function reviewAntiFabrication(
   for (const d of stepDefs) seen.set(d.pattern, (seen.get(d.pattern) ?? 0) + 1);
   for (const [pat, n] of seen) {
     if (n > 1) advisories.push(`Duplicate step definition defined ${n}× : "${pat}".`);
+  }
+
+  // 5) Confusable steps: a step that belongs to a family of look-alike REAL steps
+  //    (e.g. "Save" vs "Save & Exit") is a wrong-but-valid pick that exact-match
+  //    checks can never catch. Surface each distinct pick once for human
+  //    confirmation. Deduped by (family, chosen variant) to stay low-noise.
+  const families = buildStepFamilies(stepDefs.map((d) => d.pattern));
+  const flaggedConfusables = new Set<string>();
+  for (const sc of scenarios) {
+    for (const st of sc.steps) {
+      const fam = findFamilyForStep(st.text, families);
+      if (!fam) continue;
+      const chosen = familyKey(st.text)?.modifierKey ?? "";
+      const dedupKey = `${fam.signature}|${chosen}`;
+      if (flaggedConfusables.has(dedupKey)) continue;
+      flaggedConfusables.add(dedupKey);
+      const siblings = fam.variants
+        .filter((v) => v.modifierKey !== chosen)
+        .map((v) => `"${v.pattern}"`)
+        .join(", ");
+      if (!siblings) continue;
+      advisories.push(
+        `Confusable step "${st.text}" (${sc.file}:${st.line}) — look-alike real sibling(s): ${siblings}. ` +
+          `All are valid steps with different behaviour; confirm this is the intended variant for this flow (pick by outcome, not by frequency).`,
+      );
+    }
   }
 
   const verdict: ReviewVerdict =

@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TicketIntelligence } from "./intelligence.js";
+import { buildStepFamilies, familyKey } from "./confusable-steps.js";
 import {
   adfToPlainText,
   extractAcceptanceLines,
@@ -136,11 +137,36 @@ export type TestAuthoringPack = {
   prerequisites: string[];
   feature_skeleton: string;
   data_prerequisites: string[];
+  // Families of REAL steps that share an action+object but differ by a modifier
+  // (e.g. "Save" vs "Save & Exit"). The agent must pick deliberately — these
+  // cannot be told apart by exact-match checks.
+  confusable_steps: ConfusableStepGroup[];
+  // Copy-template: closest scenario split into keep-verbatim envelope + editable
+  // main block. Null when there is no usable similar scenario.
+  scenario_template: ScenarioTemplate | null;
   master_prompt: string;
   master_prompt_path?: string;
   reviewer_gate: string[];
   kb_path?: string;
   next_action: string;
+};
+
+export type ConfusableStepGroup = {
+  signature: string;
+  variants: { pattern: string; used_in_similar: number }[];
+};
+
+// A copy-template derived from the closest matching scenario, split into a
+// stable "envelope" (navigation/setup + save/verify/exit that is shared across
+// similar scenarios) and the "main" action block. The author keeps prelude and
+// postlude VERBATIM and only rewrites the main steps — so the proven start/end
+// of a working scenario is never accidentally altered.
+export type ScenarioTemplate = {
+  source: string; // "<scenario name> (<file>)"
+  prelude: string[]; // navigation/setup — keep verbatim
+  main: string[]; // the only block you customise
+  postlude: string[]; // save/verify/exit — keep verbatim
+  derived_from_siblings: boolean; // true = envelope learned from ≥2 scenarios
 };
 
 // The five independent reviewers the result must pass before it is presented.
@@ -228,6 +254,8 @@ export async function buildTestAuthoringPack(opts: {
   let reusable_steps: StepDefinition[] = [];
   let locator_files: string[] = [];
   let prerequisites: string[] = [];
+  let confusable_steps: ConfusableStepGroup[] = [];
+  let scenario_template: ScenarioTemplate | null = null;
 
   if (repoRoot && uniqueKw.length > 0) {
     const allFiles = await gitLsFiles(repoRoot);
@@ -276,6 +304,24 @@ export async function buildTestAuthoringPack(opts: {
       // Fall back to a sample of available steps so the agent sees conventions.
       reusable_steps = allMinedSteps.slice(0, 25);
     }
+
+    // Confusable-step families: detected across the BROAD step universe (so a
+    // rarer-but-correct variant is surfaced even if the keyword filter dropped
+    // it), then narrowed to families relevant to this ticket. Per variant we
+    // count how often it is used in the closest similar scenarios — that local
+    // usage is the anchor the agent should follow (Layer 2).
+    confusable_steps = buildRelevantConfusables(
+      allMinedSteps.map((s) => s.pattern),
+      similar_scenarios,
+      reusable_steps,
+      ticketTokens,
+    );
+
+    // Copy-template: take the closest scenario and split it into the stable
+    // envelope (shared navigation/setup + save/verify/exit) and the editable
+    // main block, so the author preserves the proven start/end verbatim and only
+    // rewrites the middle.
+    scenario_template = buildScenarioTemplate(similar_scenarios);
   }
 
   const feature_skeleton = buildFeatureSkeleton({
@@ -298,6 +344,8 @@ export async function buildTestAuthoringPack(opts: {
     locator_files,
     prerequisites,
     dataPrerequisites: data_prerequisites,
+    confusables: confusable_steps,
+    scenarioTemplate: scenario_template,
     feature_skeleton,
     masterPrompt: master.text,
     hasRepo: Boolean(repoRoot),
@@ -361,6 +409,14 @@ export async function buildTestAuthoringPack(opts: {
     "  4. EXTEND MINIMALLY — existing step is 90% correct, add smallest possible change\n" +
     "  5.  BLOCKED — no match found → DO NOT generate code → add to 'Required Inputs' table → ask user\n\n" +
 
+    "STEP 3.5 — COPY THE ENVELOPE, CHANGE ONLY THE MIDDLE:\n" +
+    "If 'scenario_template' is present, author the new scenario by COPYING it: keep the 'prelude' " +
+    "(navigation/setup) and 'postlude' (save/verify/exit) steps VERBATIM — they are the proven envelope shared " +
+    "by similar scenarios — and rewrite ONLY the 'main' block to match this ticket. Do NOT swap an envelope step " +
+    "for a look-alike (e.g. 'Save' → 'Save & Exit'); that is the #1 silent-breakage cause. " +
+    "If this ticket truly needs a different navigation or save/exit than the envelope, make that change DELIBERATELY, " +
+    "cross-check it against 'confusable_steps', and call it out explicitly — never change start/end steps silently.\n\n" +
+
     "STEP 4 — LOCATOR VALIDATION:\n" +
     "Only use locators confirmed present in locator_files. " +
     "If a locator is not confirmed: DO NOT generate one. " +
@@ -400,6 +456,8 @@ export async function buildTestAuthoringPack(opts: {
     prerequisites,
     feature_skeleton,
     data_prerequisites,
+    confusable_steps,
+    scenario_template,
     master_prompt: master.text,
     master_prompt_path: master.path,
     reviewer_gate: REVIEWER_GATE,
@@ -697,6 +755,8 @@ function renderMarkdown(opts: {
   locator_files: string[];
   prerequisites: string[];
   dataPrerequisites: string[];
+  confusables: ConfusableStepGroup[];
+  scenarioTemplate: ScenarioTemplate | null;
   feature_skeleton: string;
   masterPrompt: string;
   hasRepo: boolean;
@@ -779,6 +839,69 @@ function renderMarkdown(opts: {
     md.push("> If a prerequisite is missing from Reusable step definitions, add it to **Required Inputs** and ask the user.");
   }
   md.push("");
+
+  // ── CONFUSABLE STEPS — wrong-but-valid pick is invisible to exact matching ──
+  if (opts.confusables.length) {
+    md.push("## ⚠️ CONFUSABLE STEPS — choose deliberately (do NOT default to the most common)");
+    md.push("> These are groups of **real** steps that look alike but behave differently —");
+    md.push("> e.g. `Save` stays on the page while `Save & Exit` saves AND leaves.");
+    md.push("> Exact-match/anti-fabrication checks CANNOT catch a wrong pick here, because");
+    md.push("> every variant is a legitimate step. Choosing the wrong one silently breaks the test.");
+    md.push("");
+    opts.confusables.forEach((g, i) => {
+      md.push(`**Group ${i + 1}** — core action \`${g.signature}\`:`);
+      for (const v of g.variants) {
+        const tag =
+          v.used_in_similar > 0
+            ? ` — used **${v.used_in_similar}×** in similar scenarios (likely the convention for this flow)`
+            : " — not used in any similar scenario";
+        md.push(`- \`${v.pattern}\`${tag}`);
+      }
+      md.push("");
+    });
+    md.push("> **Rule:** pick the variant that matches the ticket's intended OUTCOME *and* the");
+    md.push("> usage in the closest similar scenario — NOT the globally most frequent variant.");
+    md.push("> If you cannot tell which variant the flow needs, STOP and ask the user.");
+    md.push("");
+  }
+
+  // ── SCENARIO COPY-TEMPLATE — keep the envelope, change only the middle ──────
+  const tpl = opts.scenarioTemplate;
+  if (tpl && (tpl.prelude.length || tpl.postlude.length)) {
+    md.push("## 🧱 SCENARIO TEMPLATE — copy this, change ONLY the middle block");
+    md.push(
+      `> Closest matching scenario: \`${tpl.source}\`. ` +
+        (tpl.derived_from_siblings
+          ? "The PRELUDE and POSTLUDE below are the steps that **multiple** similar scenarios share — i.e. the proven navigation/setup and save/verify/exit envelope."
+          : "Only one similar scenario was found, so the envelope below is a best-effort split — verify it before relying on it."),
+    );
+    md.push(
+      "> **Rule: copy the whole scenario, then edit ONLY the `MAIN ACTION` lines.** " +
+        "Do NOT touch the PRELUDE (how you get to the screen) or the POSTLUDE (how you save/verify/leave) — " +
+        "those are why the reference scenario works. Changing them is the #1 source of silent breakage " +
+        "(e.g. swapping `Save` for `Save & Exit`).",
+    );
+    md.push("");
+    md.push("```gherkin");
+    md.push("  # ── PRELUDE — navigation/setup — KEEP VERBATIM ──");
+    if (tpl.prelude.length) tpl.prelude.forEach((s) => md.push(`  ${s}`));
+    else md.push("  # (none detected — confirm no setup is required)");
+    md.push("");
+    md.push("  # ── MAIN ACTION — the ONLY block you customise for this ticket ──");
+    if (tpl.main.length) tpl.main.forEach((s) => md.push(`  ${s}`));
+    else md.push("  # (insert this ticket's specific action steps here)");
+    md.push("");
+    md.push("  # ── POSTLUDE — save/verify/exit — KEEP VERBATIM ──");
+    if (tpl.postlude.length) tpl.postlude.forEach((s) => md.push(`  ${s}`));
+    else md.push("  # (none detected — confirm no save/verify/exit is required)");
+    md.push("```");
+    md.push(
+      "> If this ticket genuinely needs a DIFFERENT save/exit or navigation than the envelope shows, " +
+        "that is a deliberate change — call it out explicitly and justify it (cross-check **Confusable steps** above). " +
+        "Never change it silently.",
+    );
+    md.push("");
+  }
 
   md.push("## Knowledge base");
   md.push(`- **Summary:** ${kb.summary}`);
@@ -1142,6 +1265,173 @@ function extractTicketPrerequisites(opts: {
   }
 
   return out.map((o) => o.line);
+}
+
+/**
+ * Build the ticket-relevant confusable step families with per-variant usage
+ * counts from the closest similar scenarios (the Layer 2 anchor). Families are
+ * detected across the BROAD step universe so a rarer-but-correct variant is
+ * surfaced even when the keyword filter dropped it, then narrowed to families
+ * that actually touch this ticket to keep noise low.
+ */
+function buildRelevantConfusables(
+  allPatterns: string[],
+  similar: AutomationScenario[],
+  reusable: StepDefinition[],
+  ticketTokens: Set<string>,
+): ConfusableStepGroup[] {
+  const families = buildStepFamilies(allPatterns);
+  if (families.length === 0) return [];
+
+  // Count how often each variant is actually used in similar scenarios.
+  const usage = new Map<string, number>(); // `${signature}|${modifierKey}` -> count
+  for (const sc of similar) {
+    for (const step of sc.steps) {
+      const k = familyKey(stripLeadingKeyword(step));
+      if (!k) continue;
+      const key = `${k.signature}|${k.modifierKey}`;
+      usage.set(key, (usage.get(key) ?? 0) + 1);
+    }
+  }
+
+  const reusablePatterns = new Set(reusable.map((s) => s.pattern));
+  const out: ConfusableStepGroup[] = [];
+
+  for (const fam of families) {
+    const variants = fam.variants.map((v) => ({
+      pattern: v.pattern,
+      used_in_similar: usage.get(`${fam.signature}|${v.modifierKey}`) ?? 0,
+    }));
+
+    // Relevance gate: keep only families that touch THIS ticket — a variant is
+    // used in similar scenarios, offered as a reusable step, or overlaps the
+    // ticket keywords. Prevents dumping unrelated repo-wide families.
+    const relevant = variants.some(
+      (v) =>
+        v.used_in_similar > 0 ||
+        reusablePatterns.has(v.pattern) ||
+        overlapScore(new Set(keywordsFromText(v.pattern)), ticketTokens) > 0,
+    );
+    if (!relevant) continue;
+
+    // Most-used-locally variant first — that is the convention to follow.
+    variants.sort((a, b) => b.used_in_similar - a.used_in_similar);
+    out.push({ signature: fam.signature, variants: variants.slice(0, 5) });
+    if (out.length >= 6) break;
+  }
+  return out;
+}
+
+/**
+ * Build a copy-template from the closest similar scenario: split its steps into
+ * a stable envelope (prelude = shared navigation/setup, postlude = shared
+ * save/verify/exit) and the editable main block.
+ *
+ * Primary strategy is DATA-DRIVEN: the envelope is the longest step prefix and
+ * suffix that the closest sibling scenarios share with the base (params blanked
+ * so values like a company name don't break the match). Steps shared across
+ * sibling scenarios of the same flow ARE the stable envelope; the part that
+ * varies between them is the action. Falls back to a conservative keyword
+ * heuristic when only one similar scenario exists.
+ */
+function buildScenarioTemplate(
+  similar: AutomationScenario[],
+): ScenarioTemplate | null {
+  if (!similar.length) return null;
+  const base = similar[0];
+  const baseSteps = base.steps;
+  if (baseSteps.length < 3) return null; // too short to have a real envelope
+
+  const siblings = similar.slice(1, 4).filter((s) => s.steps.length >= 2);
+  let prefixLen = 0;
+  let suffixLen = 0;
+  const derived_from_siblings = siblings.length > 0;
+
+  if (derived_from_siblings) {
+    prefixLen = Math.min(...siblings.map((s) => commonPrefixLen(baseSteps, s.steps)));
+    suffixLen = Math.min(...siblings.map((s) => commonSuffixLen(baseSteps, s.steps)));
+  } else {
+    prefixLen = countLeadingEnvelope(baseSteps);
+    suffixLen = countTrailingEnvelope(baseSteps);
+  }
+
+  // Never let the envelope swallow the whole scenario — always leave a main slot
+  // and prevent prefix/suffix from overlapping.
+  if (prefixLen + suffixLen > baseSteps.length - 1) {
+    suffixLen = Math.max(0, baseSteps.length - 1 - prefixLen);
+  }
+
+  const prelude = baseSteps.slice(0, prefixLen);
+  const postlude =
+    suffixLen > 0 ? baseSteps.slice(baseSteps.length - suffixLen) : [];
+  const main = baseSteps.slice(prefixLen, baseSteps.length - suffixLen);
+
+  // No usable envelope detected — not worth presenting a template.
+  if (prelude.length === 0 && postlude.length === 0) return null;
+
+  return {
+    source: `${base.name} (${base.file})`,
+    prelude,
+    main,
+    postlude,
+    derived_from_siblings,
+  };
+}
+
+/** Normalize a step for envelope comparison: drop keyword, blank quoted values. */
+function normStepForCompare(step: string): string {
+  return stripLeadingKeyword(step)
+    .replace(/"[^"]*"/g, '""')
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function commonPrefixLen(a: string[], b: string[]): number {
+  const n = Math.min(a.length, b.length);
+  let i = 0;
+  while (i < n && normStepForCompare(a[i]) === normStepForCompare(b[i])) i++;
+  return i;
+}
+
+function commonSuffixLen(a: string[], b: string[]): number {
+  const n = Math.min(a.length, b.length);
+  let i = 0;
+  while (
+    i < n &&
+    normStepForCompare(a[a.length - 1 - i]) === normStepForCompare(b[b.length - 1 - i])
+  )
+    i++;
+  return i;
+}
+
+// Single-scenario fallback — conservative keyword classification of the steps
+// that form the navigation/setup prelude and the save/verify/exit postlude.
+function countLeadingEnvelope(steps: string[]): number {
+  let i = 0;
+  while (i < steps.length - 1 && isLeadEnvelopeStep(steps[i])) i++;
+  return i;
+}
+
+function countTrailingEnvelope(steps: string[]): number {
+  let i = 0;
+  while (i < steps.length - 1 && isTrailEnvelopeStep(steps[steps.length - 1 - i])) i++;
+  return i;
+}
+
+function isLeadEnvelopeStep(step: string): boolean {
+  const s = stripLeadingKeyword(step).toLowerCase();
+  return /\b(logs? into|log(s|ged)? in|navigat|is on .*page|go(es)? to|opens|selects .*(dropdown|drop down)|clicks on .*(tab|menu|icon)|enters? .*(field)|turns? on toogle|toggle)\b/.test(
+    s,
+  );
+}
+
+function isTrailEnvelopeStep(step: string): boolean {
+  if (/^\s*Then\b/i.test(step)) return true; // assertions belong to the postlude
+  const s = stripLeadingKeyword(step).toLowerCase();
+  return /\b(save|submit|verif|assert|should|exit|close|log ?out|success|updated|message|waits?)\b/.test(
+    s,
+  );
 }
 
 /** Lightweight sentence splitter for prose mined from Jira/ADF. */
