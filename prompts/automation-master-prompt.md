@@ -45,7 +45,7 @@ Then confirm each category below:
 | 1 | **LOGIN / SESSION** | Which user/role must be logged in? Admin portal or client/employee portal? | `Given User logs into brain payroll with user "<key>"` (admin) · `Given User logs into client portal of brain payroll with user "<key>"` (client). `<key>` MUST exist in `users.config.json`. |
 | 2 | **CONTEXT / TAX YEAR** | Does the task depend on a specific tax year or company context? | `And User select tax year "2025-2026"` then `And User accepts the confirmation popup`. |
 | 3 | **NAVIGATION** | Which page/menu/tab must be open first? | `And User is on <X> page` / `When User is on <X> page` → backed by `sideNavigationPO.navigateToPageFromSideNav("Parent-->Child-->Leaf")`. |
-| 4 | **DATA / CONFIG PRE-STATE** | Must a company / employee / template / toggle / setting exist first? | e.g. company must be imported, employee added, toggle enabled, template created. Often this is a *prior scenario* (`@importCompanies`, `@importEmployees`, `@importPayroll`). |
+| 4 | **DATA / CONFIG PRE-STATE** | Must a company / employee / template / toggle / setting exist first? | e.g. company must be imported, employee added, toggle enabled, template created. See **DOMAIN FLOW PREREQUISITES** below for mandatory sequences. |
 | 5 | **SEQUENTIAL DEPENDENCY** | Is this step N of a multi-step workflow needing steps 1…N-1 first? | Replicate the full ordered sequence seen in similar scenarios. |
 | 6 | **FILE / INPUT** | Any file upload, sheet selection, or form fill needed before the main action? | `When User inputs the file "<name>.xlsx" ...` + `And User selects "<sheet>" from select sheet dropdown ...`. |
 
@@ -54,6 +54,36 @@ Then build the authoritative sequence and generate **all** Gherkin from it:
 ```
 [login] → [tax-year/context if needed] → [navigation] → [data pre-state] → [file/inputs] → [MAIN JIRA ACTION] → [assertion]
 ```
+
+### DOMAIN FLOW PREREQUISITES (Mandatory Sequences)
+For standard day-to-day functionalities, you MUST follow these general prerequisite flows. Do not invent steps like `@importPayroll` — actually sequence the required data setup steps.
+
+- **EPS**:
+  1. Need to have a company
+  2. Then company should have employees
+  3. For employees FPS need to be sent
+  4. After FPS then EPS need to be sent
+
+- **BACS**:
+  1. Need to have a company
+  2. Then company should have employees
+  3. Employee should have bank details
+  4. Then payment should be made using BACS
+
+- **PAYE BACS**:
+  1. Need to have a company
+  2. Then company should have employees
+  3. For employees FPS need to be sent
+  4. After FPS then EPS need to be sent
+  5. After EPS then payment BACS can be generated
+
+- **YEAR END PROCESS**:
+  1. The company should exist
+  2. Then company should have employees
+  3. For employees FPS need to be sent of the last period
+  4. Then payroll migration
+  5. Then company migration
+  6. Then employee migration
 
 ---
 
