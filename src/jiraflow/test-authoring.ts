@@ -226,13 +226,24 @@ export async function buildTestAuthoringPack(opts: {
   // prerequisite that is implied, never written as a step — e.g. "companies must
   // have multiple users set up"). This is read straight from Jira so it is caught
   // even when no similar repo scenario shows the setup.
-  const data_prerequisites = extractTicketPrerequisites({
-    summary: intelligence.summary,
-    description: intelligence.plain_description,
-    acceptance,
-    steps: stepsToReproduce,
-    comments: commentText,
-  });
+  const fullTextForDomain = [
+    intelligence.summary,
+    intelligence.plain_description,
+    ...stepsToReproduce,
+    ...acceptance,
+    commentText,
+  ].join(" ");
+  
+  const data_prerequisites = [
+    ...extractDomainFlowPrerequisites(fullTextForDomain),
+    ...extractTicketPrerequisites({
+      summary: intelligence.summary,
+      description: intelligence.plain_description,
+      acceptance,
+      steps: stepsToReproduce,
+      comments: commentText,
+    }),
+  ];
 
   const kb: TestAuthoringKB = {
     key,
@@ -1267,6 +1278,54 @@ function extractTicketPrerequisites(opts: {
   }
 
   return out.map((o) => o.line);
+}
+
+/**
+ * Extract hardcoded domain-specific prerequisite flows based on keyword detection.
+ * Ensures that common business processes (EPS, BACS, Year End) always inject
+ * their mandatory data/setup sequences into the authoring pack.
+ */
+function extractDomainFlowPrerequisites(blob: string): string[] {
+  const text = blob.toLowerCase();
+  const out: string[] = [];
+
+  const isYearEnd = /\byear\s*end\b/.test(text);
+  const isPayeBacs = /\bpaye\s*bacs\b/.test(text);
+  const isBacs = !isPayeBacs && /\bbacs\b/.test(text);
+  const isEps = !isPayeBacs && /\beps\b/.test(text); // Paye bacs already covers EPS
+
+  if (isYearEnd) {
+    out.push("DOMAIN FLOW (Year End): Company should exist");
+    out.push("DOMAIN FLOW (Year End): Company should have employees");
+    out.push("DOMAIN FLOW (Year End): FPS need to be sent for the last period");
+    out.push("DOMAIN FLOW (Year End): Payroll migration");
+    out.push("DOMAIN FLOW (Year End): Company migration");
+    out.push("DOMAIN FLOW (Year End): Employee migration");
+  } 
+  
+  if (isPayeBacs) {
+    out.push("DOMAIN FLOW (PAYE BACS): Company should exist");
+    out.push("DOMAIN FLOW (PAYE BACS): Company should have employees");
+    out.push("DOMAIN FLOW (PAYE BACS): For employees FPS need to be sent");
+    out.push("DOMAIN FLOW (PAYE BACS): After FPS then EPS need to be sent");
+    out.push("DOMAIN FLOW (PAYE BACS): After EPS then payment BACS can be generated");
+  } else {
+    // Only output these if PAYE BACS didn't already cover them
+    if (isBacs) {
+      out.push("DOMAIN FLOW (BACS): Company should exist");
+      out.push("DOMAIN FLOW (BACS): Company should have employees");
+      out.push("DOMAIN FLOW (BACS): Employee should have bank details");
+      out.push("DOMAIN FLOW (BACS): Payment should be made using BACS");
+    }
+    if (isEps) {
+      out.push("DOMAIN FLOW (EPS): Company should exist");
+      out.push("DOMAIN FLOW (EPS): Company should have employees");
+      out.push("DOMAIN FLOW (EPS): For employees FPS need to be sent");
+      out.push("DOMAIN FLOW (EPS): After FPS then EPS need to be sent");
+    }
+  }
+
+  return out;
 }
 
 /**
